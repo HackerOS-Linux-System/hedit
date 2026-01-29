@@ -1,4 +1,4 @@
 // golang
+
 > cd source-code
-> go get hedit
-> go build
+> go get hedit && go build
