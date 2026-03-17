@@ -6,7 +6,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"ngt/src"
+	"hedit/src"
 )
 
 func main() {
