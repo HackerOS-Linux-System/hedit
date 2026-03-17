@@ -19,7 +19,7 @@ func main() {
 	}
 	filename := args[0]
 
-	p := tea.NewProgram(initialModel(filename, *themeName), tea.WithAltScreen())
+	p := tea.NewProgram(src.InitialModel(filename, *themeName), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error running program:", err)
 		os.Exit(1)
