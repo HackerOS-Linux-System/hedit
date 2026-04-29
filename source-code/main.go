@@ -18,7 +18,6 @@ func main() {
 		os.Exit(1)
 	}
 	filename := args[0]
-
 	p := tea.NewProgram(src.InitialModel(filename, *themeName), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error running program:", err)
