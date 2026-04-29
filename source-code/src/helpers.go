@@ -93,3 +93,56 @@ func leadingWhitespace(s string) string {
 	}
 	return s[:i]
 }
+
+// wordStart returns the byte index of the start of the word at/before pos
+func wordStart(line string, pos int) int {
+	if pos <= 0 {
+		return 0
+	}
+	// skip whitespace backwards
+	i := pos
+	for i > 0 {
+		prev := utf8Prev(line, i)
+		r, _ := utf8.DecodeRuneInString(line[prev:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		i = prev
+	}
+	// skip word chars backwards
+	for i > 0 {
+		prev := utf8Prev(line, i)
+		r, _ := utf8.DecodeRuneInString(line[prev:])
+		if unicode.IsSpace(r) {
+			break
+		}
+		i = prev
+	}
+	return i
+}
+
+// wordEnd returns the byte index of the end of the word at/after pos
+func wordEnd(line string, pos int) int {
+	n := len(line)
+	if pos >= n {
+		return n
+	}
+	// skip whitespace
+	i := pos
+	for i < n {
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if !unicode.IsSpace(r) {
+			break
+		}
+		i += size
+	}
+	// skip word chars
+	for i < n {
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if unicode.IsSpace(r) {
+			break
+		}
+		i += size
+	}
+	return i
+}
