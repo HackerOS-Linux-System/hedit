@@ -31,8 +31,16 @@ func (m model) View() string {
 
 	if m.mode == "prompt" {
 		statusStr = promptStyle.Render("File modified. Save changes? (Y)es (N)o ^C Cancel")
-	} else if m.mode == "search" || m.mode == "gotoline" {
-		statusStr = promptStyle.Render("Search/GoTo: " + m.searchInput.View())
+	} else if m.mode == "search" {
+		statusStr = promptStyle.Render("Search: " + m.searchInput.View())
+	} else if m.mode == "gotoline" {
+		statusStr = promptStyle.Render("Go to line: " + m.searchInput.View())
+	} else if m.mode == "replace" {
+		if m.replaceStep == 0 {
+			statusStr = promptStyle.Render("Find: " + m.searchInput.View())
+		} else {
+			statusStr = promptStyle.Render("Replace with: " + m.replaceInput.View())
+		}
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer, statusStr)
@@ -114,6 +122,7 @@ func (m model) highlightLine(y int) string {
 				if skip >= w {
 					pos += w
 					j += size
+					bytePos += size
 					continue
 				}
 				pos += skip
@@ -197,6 +206,7 @@ func (m model) fallbackHighlight(raw string, y int, offsetX, textWidth int) stri
 			if skip >= w {
 				pos += w
 				j += size
+				bytePos += size
 				continue
 			}
 			pos += skip
@@ -255,7 +265,7 @@ func (m model) fallbackHighlight(raw string, y int, offsetX, textWidth int) stri
 }
 
 func (m model) renderFooter() string {
-	line1 := "^G Get Help ^O Write Out ^W Where Is ^K Cut ^P Copy ^U Paste ^C Cur Pos ^Z Undo ^Y Redo"
-	line2 := "^X Exit ^G Go To Line"
+	line1 := "^O Save  ^X Exit  ^W Search  ^R Replace  ^K Cut  ^P Copy  ^U Paste  ^Z Undo  ^Y Redo"
+	line2 := "^G GoTo Line  ^D Duplicate  ^A Select All  ^/ Comment  ^← Word Left  ^→ Word Right"
 	return footerStyle.Render(line1 + "\n" + line2)
 }
