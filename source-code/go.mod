@@ -1,6 +1,8 @@
 module hedit
 
-go 1.23.5
+go 1.23.0
+
+toolchain go1.24.4
 
 require (
 	github.com/alecthomas/chroma/v2 v2.15.0
