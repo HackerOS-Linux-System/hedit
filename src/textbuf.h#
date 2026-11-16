@@ -1,0 +1,191 @@
+pub fn end_after(y: int, x: int, text: string) -> (int, int) is
+    let parts: [string] = util::split_lines(text)
+    let k: int = parts.len()
+    if k <= 1 is return (y, x + text.len()) end
+    return (y + k - 1, parts[k - 1].len())
+end
+
+;; Surowa zamiana zakresu – bez historii i bez ruchu kursora.
+pub fn splice(ed: model::Ed, sy: int, sx: int, ey: int, ex: int, text: string) is
+    let first: string = ed.lines[sy]
+    let last: string = ed.lines[ey]
+    let head: string = first[0..sx]
+    let tail: string = last[ex..last.len()]
+    let parts: [string] = util::split_lines(text)
+    let k: int = parts.len()
+    if sy == ey && k <= 1 is
+        let mut ls: [string] = ed.lines
+        ls[sy] = head + text + tail
+        ed.lines = ls
+        return
+    end
+    let mut out: [string] = []
+    let total: int = ed.lines.len()
+    let mut i: int = 0
+    while i < sy is
+        out.push(ed.lines[i])
+        i = i + 1
+    end
+    if k <= 1 is
+        out.push(head + text + tail)
+    else is
+        out.push(head + parts[0])
+        let mut m: int = 1
+        while m < k - 1 is
+            out.push(parts[m])
+            m = m + 1
+        end
+        out.push(parts[k - 1] + tail)
+    end
+    i = ey + 1
+    while i < total is
+        out.push(ed.lines[i])
+        i = i + 1
+    end
+    ed.lines = out
+    model::update_lnw(ed)
+end
+
+pub fn new_group(ed: model::Ed) -> int is
+    let g: int = ed.next_grp
+    ed.next_grp = g + 1
+    return g
+end
+
+fn push_undo(ed: model::Ed, a: model::Action) is
+    let mut st: [model::Action] = ed.undo
+    st.push(a)
+    if st.len() > 5000 is
+        let mut keep: [model::Action] = []
+        let mut i: int = st.len() - 4000
+        while i < st.len() is
+            keep.push(st[i])
+            i = i + 1
+        end
+        st = keep
+    end
+    ed.undo = st
+end
+
+;; Czy nową zmianę można dokleić do ostatniej akcji (paczki wpisywania < 500 ms).
+fn try_merge(ed: model::Ed, sy: int, sx: int, ey: int, ex: int, before: string, text: string, kind: string, cy1: int, cx1: int, now: int) -> bool is
+    if ed.undo.len() == 0 is return false end
+    let last: model::Action = ed.undo[ed.undo.len() - 1]
+    if last.grp != 0 || now - last.stamp >= 500 || last.kind != kind is return false end
+    if sy != ey || last.cy1 != sy is return false end
+    if kind == "type" is
+        if last.before == "" && sy == last.sy && sx == last.sx + last.after.len() && util::find_from(last.after, "\n", 0) < 0 && util::find_from(text, "\n", 0) < 0 && before == "" is
+            last.after = last.after + text
+            last.cy1 = cy1
+            last.cx1 = cx1
+            last.stamp = now
+            return true
+        end
+    end
+    if kind == "back" is
+        if last.after == "" && ex == last.sx && sy == last.sy && text == "" is
+            last.before = before + last.before
+            last.sx = sx
+            last.cx1 = cx1
+            last.stamp = now
+            return true
+        end
+    end
+    if kind == "del" is
+        if last.after == "" && sx == last.sx && sy == last.sy && text == "" is
+            last.before = last.before + before
+            last.stamp = now
+            return true
+        end
+    end
+    return false
+end
+
+;; Główny prymityw edycji. `grp` > 0 łączy kilka zmian w jedno cofnięcie.
+pub fn edit(ed: model::Ed, sy: int, sx: int, ey: int, ex: int, text: string, kind: string, grp: int) is
+    let before: string = model::text_between(ed, sy, sx, ey, ex)
+    if before == "" && text == "" is return end
+    let cy0: int = ed.cy
+    let cx0: int = ed.cx
+    splice(ed, sy, sx, ey, ex, text)
+    let (cy1, cx1) = end_after(sy, sx, text)
+    ed.cy = cy1
+    ed.cx = cx1
+    ed.has_sel = false
+    ed.modified = true
+    let no_redo: [model::Action] = []
+    ed.redo = no_redo
+    let now: int = model::now()
+    let merged: bool = if grp == 0 is try_merge(ed, sy, sx, ey, ex, before, text, kind, cy1, cx1, now) else is false end
+    if !merged is
+        let a: model::Action = model::Action {
+            sy: sy, sx: sx, before: before, after: text,
+            cy0: cy0, cx0: cx0, cy1: cy1, cx1: cx1,
+            grp: grp, kind: kind, stamp: now
+        }
+        push_undo(ed, a)
+    end
+    model::remember_col(ed)
+end
+
+fn revert(ed: model::Ed, a: model::Action) is
+    let (ey, ex) = end_after(a.sy, a.sx, a.after)
+    splice(ed, a.sy, a.sx, ey, ex, a.before)
+    ed.cy = util::clampi(a.cy0, 0, ed.lines.len() - 1)
+    ed.cx = util::clampi(a.cx0, 0, ed.lines[ed.cy].len())
+end
+
+fn reapply(ed: model::Ed, a: model::Action) is
+    let (ey, ex) = end_after(a.sy, a.sx, a.before)
+    splice(ed, a.sy, a.sx, ey, ex, a.after)
+    ed.cy = util::clampi(a.cy1, 0, ed.lines.len() - 1)
+    ed.cx = util::clampi(a.cx1, 0, ed.lines[ed.cy].len())
+end
+
+;; Cofnięcie (ctrl+z). Zwraca false, gdy nie ma czego cofać.
+pub fn undo(ed: model::Ed) -> bool is
+    if ed.undo.len() == 0 is return false end
+    let mut st: [model::Action] = ed.undo
+    let mut rd: [model::Action] = ed.redo
+    let first: model::Action = st.pop()
+    revert(ed, first)
+    rd.push(first)
+    if first.grp > 0 is
+        while st.len() > 0 && st[st.len() - 1].grp == first.grp is
+            let a: model::Action = st.pop()
+            revert(ed, a)
+            rd.push(a)
+        end
+    end
+    ed.undo = st
+    ed.redo = rd
+    ed.has_sel = false
+    ed.modified = true
+    model::update_lnw(ed)
+    model::remember_col(ed)
+    return true
+end
+
+;; Ponowienie (ctrl+y).
+pub fn redo(ed: model::Ed) -> bool is
+    if ed.redo.len() == 0 is return false end
+    let mut st: [model::Action] = ed.undo
+    let mut rd: [model::Action] = ed.redo
+    let first: model::Action = rd.pop()
+    reapply(ed, first)
+    st.push(first)
+    if first.grp > 0 is
+        while rd.len() > 0 && rd[rd.len() - 1].grp == first.grp is
+            let a: model::Action = rd.pop()
+            reapply(ed, a)
+            st.push(a)
+        end
+    end
+    ed.undo = st
+    ed.redo = rd
+    ed.has_sel = false
+    ed.modified = true
+    model::update_lnw(ed)
+    model::remember_col(ed)
+    return true
+end
