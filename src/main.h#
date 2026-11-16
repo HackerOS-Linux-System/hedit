@@ -1,0 +1,167 @@
+use "bit -> tui" from "tui"
+
+;; Kolejność = kolejność zależności (moduł może używać tylko wcześniejszych).
+mod util
+mod theme
+mod syntax
+mod model
+mod textbuf
+mod clip
+mod search
+mod edit
+mod view
+mod update
+
+;; ── hedit ────────────────────────────────────────────────────────────────────
+;; Terminalowy edytor tekstu – przepisany z Go (bubbletea + chroma) na H#.
+;; Interfejs: biblioteka `tui` (bit), manifest: Bit.hk.
+
+extern static [c] is
+    fn exit(code: int)
+end
+
+const VERSION: string = "1.0.0"
+
+fn usage() is
+    write("hedit " + VERSION + " - terminal text editor written in H# (tui library)")
+    write("")
+    write("Usage: hedit [options] <filename>")
+    write("")
+    write("Options:")
+    write("  -t, --theme <name>    colour theme (default: monokai); see --list-themes")
+    write("      --list-themes     print the available themes")
+    write("      --tabs <n>        tab width / spaces per indent (default: 4)")
+    write("      --hard-tabs       insert real tab characters instead of spaces")
+    write("      --no-backup       do not write <file>.bak on save")
+    write("      --mouse           enable mouse (click, drag, wheel; Shift+drag selects in the terminal)")
+    write("  -h, --help            show this help")
+    write("  -V, --version         show the version")
+end
+
+;; Przy Ctrl+C (tui kończy program od razu) niezapisane zmiany trafiają do pliku odzyskiwania.
+fn rescue(ed: model::Ed) is
+    if !ed.modified || ed.done is return end
+    let path: string = ed.filename + ".hedit-recovery"
+    let body: string = iter_join(ed.lines, "\n") + "\n"
+    if __builtin_fs_write(path, body) is
+        write("hedit: unsaved changes written to " + path)
+    else is
+        write("hedit: unsaved changes LOST (could not write " + path + ")")
+    end
+end
+
+;; Ustawienia z wiersza poleceń.
+struct Cli is
+    pub filename: string
+    pub theme: string
+    pub tab_w: int
+    pub soft: bool
+    pub backup: bool
+    pub mouse: bool
+end
+
+;; Parsuje argumenty (args[0] to ścieżka programu). Błędy i --help kończą program.
+fn parse_args() -> Cli is
+    let args: [string] = __builtin_env_args()
+    let argc: int = args.len()
+    let mut filename: string = ""
+    let mut theme_name: string = "monokai"
+    let mut tab_w: int = 4
+    let mut soft: bool = true
+    let mut backup: bool = true
+    let mut mouse: bool = false
+
+    let mut i: int = 1
+    while i < argc is
+        let a: string = args[i]
+        if a == "-h" || a == "--help" is
+            usage()
+            exit(0)
+        elsif a == "-V" || a == "--version" is
+            write("hedit " + VERSION)
+            exit(0)
+        elsif a == "--list-themes" is
+            let all: [string] = theme::names()
+            for t in all is
+                write(t)
+            end
+            exit(0)
+        elsif a == "-t" || a == "--theme" is
+            i = i + 1
+            if i < argc is theme_name = args[i] end
+        elsif util::starts_at(a, 0, "--theme=") is
+            theme_name = a[8..a.len()]
+        elsif a == "--tabs" is
+            i = i + 1
+            if i < argc && util::is_number(args[i]) is
+                tab_w = util::clampi(__builtin_conv_str_to_int(args[i]), 1, 16)
+            end
+        elsif a == "--hard-tabs" is
+            soft = false
+        elsif a == "--no-backup" is
+            backup = false
+        elsif a == "--mouse" is
+            mouse = true
+        elsif a == "--" is
+            i = i + 1
+            if i < argc is filename = args[i] end
+            i = argc
+        elsif util::starts_at(a, 0, "-") && a.len() > 1 is
+            write("hedit: unknown option " + a)
+            write("Try 'hedit --help'.")
+            exit(2)
+        else is
+            filename = a
+        end
+        i = i + 1
+    end
+    return Cli { filename: filename, theme: theme_name, tab_w: tab_w, soft: soft, backup: backup, mouse: mouse }
+end
+
+;; Funkcje przekazywane do pętli tui. `init` buduje stan od zera z argumentów,
+;; dzięki czemu nie potrzebuje domknięcia.
+fn init() -> any is
+    let c: Cli = parse_args()
+    let ed: model::Ed = model::load_file(c.filename, c.theme, c.tab_w, c.soft)
+    ed.mouse = c.mouse
+    ed.backup = c.backup
+    return ed
+end
+
+fn on_update(model_any: any, msg: any) -> (any, fn() -> any) is
+    return update::update(model_any, msg)
+end
+
+fn on_view(model_any: any) -> string is
+    return view::view(model_any)
+end
+
+fn main() is
+    let cli: Cli = parse_args()
+    if cli.filename == "" is
+        write("Usage: hedit [options] <filename>")
+        exit(1)
+    end
+    if !theme::exists(cli.theme) is
+        write("hedit: unknown theme '" + cli.theme + "', using monokai (see --list-themes)")
+    end
+    if __builtin_fs_is_dir(cli.filename) is
+        write("hedit: " + cli.filename + " is a directory")
+        exit(1)
+    end
+
+    let mut opts: any = tui::options_new()
+    opts = tui::options_title(opts, "hedit - " + cli.filename)
+    opts = tui::options_mouse(opts, cli.mouse)
+    opts = tui::options_tick_ms(opts, 200)
+
+    ;; bracketed paste: tui zwraca wtedy klawisze paste_start / paste_end
+    __builtin_io_write_no_nl("\x1b[?2004h")
+    __builtin_io_flush()
+    let final_model: any = tui::run_with(init, on_update, on_view, opts)
+    __builtin_io_write_no_nl("\x1b[?2004l")
+    __builtin_io_flush()
+
+    let ed: model::Ed = final_model
+    rescue(ed)
+end
