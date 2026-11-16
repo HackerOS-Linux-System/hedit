@@ -1,0 +1,371 @@
+use "bit -> tui" from "tui"
+
+;; ── update: obsługa komunikatów i klawiszy (odpowiednik Update z model.go) ───
+;;
+;; Różnice względem wersji w Go wynikające z biblioteki tui:
+;;   * Ctrl+C jest przechwytywane przez tui i kończy program od razu – dlatego
+;;     „pozycja kursora" (stare Ctrl+C) jest teraz stale na pasku statusu,
+;;     a przy wyjściu z niezapisanymi zmianami main zapisuje plik odzyskiwania.
+;;   * Ctrl+/ i Ctrl+Shift+C/V nie istnieją w protokole terminala, więc:
+;;     komentarz = Alt+/, kopiuj/wklej systemowe = Alt+C / Alt+V.
+
+fn done_pair(ed: model::Ed) -> (any, fn() -> any) is
+    model::scroll_to_cursor(ed)
+    if ed.done is return (ed, tui::cmd_quit()) end
+    return (ed, tui::cmd_none())
+end
+
+;; Otwiera pole zapytania w pasku statusu.
+fn open_prompt(ed: model::Ed, mode: string, initial: string) is
+    ed.mode = mode
+    let mut ti: any = tui::textinput_new("")
+    ti = tui::textinput_set_value(ti, initial)
+    ed.input = ti
+end
+
+fn do_save(ed: model::Ed) -> bool is
+    if model::save(ed) is
+        ed.modified = false
+        model::set_status(ed, "Saved " + ed.filename + " (" + to_string(ed.lines.len()) + " lines)", 3)
+        return true
+    end
+    model::set_error(ed, "Cannot write " + ed.filename)
+    return false
+end
+
+fn report_search(ed: model::Ed, r: int) is
+    if r == 0 is
+        model::set_error(ed, "Not found: " + ed.search)
+    elsif r == 2 is
+        model::set_status(ed, "Search wrapped - " + to_string(search::count_all(ed)) + " match(es)", 3)
+    else is
+        model::set_status(ed, to_string(search::count_all(ed)) + " match(es)", 3)
+    end
+end
+
+;; ── Tryb zapytań: szukaj / idź do linii / zamień ────────────────────────────
+
+fn prompt_key(ed: model::Ed, msg: any, key: string) is
+    if key == "esc" is
+        ed.mode = "edit"
+        return
+    end
+    if key != "enter" is
+        ed.input = tui::textinput_update(ed.input, msg)
+        return
+    end
+    let value: string = tui::textinput_value(ed.input)
+    let mode: string = ed.mode
+    ed.mode = "edit"
+    if mode == "search" is
+        if value == "" && ed.search == "" is return end
+        let same: bool = value == "" || value == ed.search
+        if value != "" is ed.search = value end
+        report_search(ed, search::find_next(ed, !same))
+    elsif mode == "gotoline" is
+        if util::is_number(value) is
+            edit::goto_line(ed, __builtin_conv_str_to_int(value))
+        else is
+            model::set_error(ed, "Invalid line number")
+        end
+    elsif mode == "find" is
+        if value == "" is return end
+        ed.search = value
+        open_prompt(ed, "replace", ed.replace)
+    elsif mode == "replace" is
+        ed.replace = value
+        let c: int = search::replace_all_text(ed, ed.search, value)
+        if c > 0 is
+            model::set_status(ed, "Replaced " + to_string(c) + " occurrence(s)", 3)
+        else is
+            model::set_error(ed, "Not found: " + ed.search)
+        end
+    end
+end
+
+;; ── Potwierdzenie wyjścia ───────────────────────────────────────────────────
+
+fn quit_key(ed: model::Ed, key: string) is
+    if key == "y" || key == "Y" is
+        if do_save(ed) is
+            ed.done = true
+        else is
+            ed.mode = "edit"
+        end
+    elsif key == "n" || key == "N" is
+        ed.done = true
+    elsif key == "esc" is
+        ed.mode = "edit"
+    end
+end
+
+;; ── Tryb edycji ─────────────────────────────────────────────────────────────
+
+fn wants_shift(key: string, base: string) -> bool is
+    return key == "shift+" + base
+end
+
+fn edit_key(ed: model::Ed, key: string) is
+    ;; wklejanie z terminala (bracketed paste)
+    if key == "paste_start" is
+        ed.pasting = true
+        return
+    end
+    if key == "paste_end" is
+        ed.pasting = false
+        return
+    end
+
+    ;; polecenia
+    if key == "ctrl+o" is
+        let _s: bool = do_save(ed)
+        return
+    end
+    if key == "ctrl+x" is
+        if ed.modified is
+            ed.mode = "prompt"
+        else is
+            ed.done = true
+        end
+        return
+    end
+    if key == "ctrl+w" is
+        open_prompt(ed, "search", ed.search)
+        return
+    end
+    if key == "f3" is
+        if ed.search == "" is
+            open_prompt(ed, "search", "")
+        else is
+            report_search(ed, search::find_next(ed, false))
+        end
+        return
+    end
+    if key == "ctrl+r" is
+        open_prompt(ed, "find", ed.search)
+        return
+    end
+    if key == "ctrl+g" is
+        open_prompt(ed, "gotoline", "")
+        return
+    end
+    if key == "f1" is
+        ed.mode = "help"
+        return
+    end
+    if key == "ctrl+z" is
+        if !textbuf::undo(ed) is model::set_status(ed, "Nothing to undo", 2) end
+        return
+    end
+    if key == "ctrl+y" is
+        if !textbuf::redo(ed) is model::set_status(ed, "Nothing to redo", 2) end
+        return
+    end
+    if key == "ctrl+k" is
+        edit::cut_selection(ed)
+        return
+    end
+    if key == "ctrl+p" || key == "alt+c" is
+        edit::copy_selection(ed)
+        return
+    end
+    if key == "ctrl+u" || key == "alt+v" is
+        edit::paste_clipboard(ed)
+        return
+    end
+    if key == "ctrl+d" is
+        edit::duplicate_line(ed)
+        return
+    end
+    if key == "ctrl+a" is
+        edit::select_all(ed)
+        return
+    end
+    if key == "alt+/" is
+        edit::toggle_comment(ed)
+        return
+    end
+    if key == "esc" is
+        ed.has_sel = false
+        ed.search = ""
+        return
+    end
+
+    ;; ruch (z Shiftem rozszerza zaznaczenie)
+    if key == "left" || key == "shift+left" is
+        edit::move_left(ed, wants_shift(key, "left"))
+        return
+    end
+    if key == "right" || key == "shift+right" is
+        edit::move_right(ed, wants_shift(key, "right"))
+        return
+    end
+    if key == "up" || key == "shift+up" is
+        edit::move_up(ed, wants_shift(key, "up"))
+        return
+    end
+    if key == "down" || key == "shift+down" is
+        edit::move_down(ed, wants_shift(key, "down"))
+        return
+    end
+    if key == "home" || key == "shift+home" is
+        edit::home(ed, wants_shift(key, "home"))
+        return
+    end
+    if key == "end" || key == "shift+end" is
+        edit::end_of_line(ed, wants_shift(key, "end"))
+        return
+    end
+    if key == "pgup" || key == "shift+pgup" is
+        edit::page_up(ed, wants_shift(key, "pgup"))
+        return
+    end
+    if key == "pgdown" || key == "shift+pgdown" is
+        edit::page_down(ed, wants_shift(key, "pgdown"))
+        return
+    end
+    if key == "ctrl+left" || key == "ctrl+shift+left" || key == "alt+left" is
+        edit::word_left(ed, key == "ctrl+shift+left")
+        return
+    end
+    if key == "ctrl+right" || key == "ctrl+shift+right" || key == "alt+right" is
+        edit::word_right(ed, key == "ctrl+shift+right")
+        return
+    end
+    if key == "ctrl+home" || key == "ctrl+shift+home" is
+        edit::doc_start(ed, key == "ctrl+shift+home")
+        return
+    end
+    if key == "ctrl+end" || key == "ctrl+shift+end" is
+        edit::doc_end(ed, key == "ctrl+shift+end")
+        return
+    end
+
+    ;; edycja
+    if key == "enter" is
+        edit::newline(ed)
+        return
+    end
+    if key == "backspace" is
+        edit::backspace(ed)
+        return
+    end
+    if key == "delete" is
+        edit::delete_key(ed)
+        return
+    end
+    if key == "alt+backspace" is
+        if model::has_real_sel(ed) is
+            edit::delete_selection(ed)
+        elsif ed.cx > 0 is
+            let ws: int = util::word_start(ed.lines[ed.cy], ed.cx)
+            textbuf::edit(ed, ed.cy, ws, ed.cy, ed.cx, "", "other", 0)
+        else is
+            edit::backspace(ed)
+        end
+        return
+    end
+    if key == "tab" is
+        if ed.pasting is
+            edit::insert_text(ed, "\t", "type")
+        else is
+            edit::tab(ed)
+        end
+        return
+    end
+    if key == "shift+tab" is
+        edit::indent_lines(ed, true)
+        return
+    end
+    if key == "space" is
+        edit::insert_text(ed, " ", "type")
+        return
+    end
+    if key != "" && !tui::is_special_key(key) is
+        edit::insert_text(ed, key, "type")
+    end
+end
+
+;; ── Mysz (opcja --mouse) ────────────────────────────────────────────────────
+
+;; Ustawia kursor w miejscu kliknięcia (współrzędne terminala liczone od 1).
+fn place_cursor(ed: model::Ed, x: int, y: int) is
+    let row: int = util::clampi(ed.oy + (y - 2), 0, ed.lines.len() - 1)
+    let vis: int = util::maxi(0, x - 1 - ed.lnw + ed.ox)
+    ed.cy = row
+    ed.cx = util::byte_from_visual(ed.lines[row], vis, ed.tab_w)
+    model::remember_col(ed)
+end
+
+fn mouse_event(ed: model::Ed, msg: any) is
+    if ed.mode != "edit" is return end
+    let button: string = tui::msg_mouse_button(msg)
+    let action: string = tui::msg_mouse_action(msg)
+    let x: int = tui::msg_x(msg)
+    let y: int = tui::msg_y(msg)
+    if button == "wheel_up" || button == "wheel_down" is
+        let delta: int = if button == "wheel_up" is 0 - 3 else is 3 end
+        let maxo: int = util::maxi(0, ed.lines.len() - 1)
+        ed.oy = util::clampi(ed.oy + delta, 0, maxo)
+        if ed.cy < ed.oy is ed.cy = ed.oy end
+        if ed.cy >= ed.oy + ed.height is ed.cy = ed.oy + ed.height - 1 end
+        ed.cy = util::clampi(ed.cy, 0, ed.lines.len() - 1)
+        ed.cx = util::byte_from_visual(ed.lines[ed.cy], ed.want_col, ed.tab_w)
+        return
+    end
+    if button == "left" is
+        if y < 2 || y > ed.height + 1 is return end
+        if action == "press" is
+            place_cursor(ed, x, y)
+            ed.has_sel = false
+            ed.ay = ed.cy
+            ed.ax = ed.cx
+        elsif action == "drag" is
+            if !ed.has_sel is
+                ed.has_sel = true
+            end
+            place_cursor(ed, x, y)
+        end
+    end
+end
+
+;; ── Punkt wejścia pętli tui ─────────────────────────────────────────────────
+
+pub fn update(model_any: any, msg: any) -> (any, fn() -> any) is
+    let ed: model::Ed = model_any
+
+    if tui::msg_is_resize(msg) is
+        ed.width = tui::msg_width(msg)
+        ed.height = util::maxi(1, tui::msg_height(msg) - 4)
+        return done_pair(ed)
+    end
+
+    if tui::msg_is_tick(msg) is
+        if ed.status != "" && model::now() > ed.status_until is
+            ed.status = ""
+            ed.is_err = false
+        end
+        return (ed, tui::cmd_none())
+    end
+
+    if tui::msg_is_mouse(msg) is
+        if ed.mouse is mouse_event(ed, msg) end
+        return done_pair(ed)
+    end
+
+    if !tui::msg_is_any_key(msg) is
+        return (ed, tui::cmd_none())
+    end
+
+    let key: string = tui::msg_key(msg)
+    if ed.mode == "edit" is
+        edit_key(ed, key)
+    elsif ed.mode == "prompt" is
+        quit_key(ed, key)
+    elsif ed.mode == "help" is
+        ed.mode = "edit"
+    else is
+        prompt_key(ed, msg, key)
+    end
+    return done_pair(ed)
+end
