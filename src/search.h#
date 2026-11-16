@@ -1,0 +1,99 @@
+fn fold(ed: model::Ed, s: string) -> string is
+    if util::all_lower(ed.search) is return util::lower_ascii(s) end
+    return s
+end
+
+;; Wyszukuje następne wystąpienie frazy od kursora (z zawinięciem na początek).
+;; `include_cursor` – czy dopasowanie może zaczynać się dokładnie pod kursorem.
+;; Zwraca 0 (brak), 1 (znaleziono) albo 2 (znaleziono po zawinięciu).
+pub fn find_next(ed: model::Ed, include_cursor: bool) -> int is
+    if ed.search == "" is return 0 end
+    let needle: string = fold(ed, ed.search)
+    let n: int = ed.lines.len()
+    let orig_y: int = ed.cy
+    let first: string = ed.lines[orig_y]
+    let mut start_x: int = ed.cx
+    if !include_cursor is
+        if ed.cx < first.len() is
+            start_x = util::next_pos(first, ed.cx)
+        else is
+            start_x = first.len() + 1
+        end
+    end
+    let mut k: int = 0
+    while k <= n is
+        let y: int = (orig_y + k) % n
+        let line: string = ed.lines[y]
+        let from: int = if k == 0 is start_x else is 0 end
+        let idx: int = util::find_from(fold(ed, line), needle, from)
+        if idx >= 0 && (k < n || idx < start_x) is
+            ed.cy = y
+            ed.cx = idx
+            ed.has_sel = false
+            model::remember_col(ed)
+            if ed.cy < ed.oy || ed.cy >= ed.oy + ed.height is
+                ed.oy = util::maxi(0, ed.cy - ed.height / 2)
+            end
+            if y < orig_y || k == n is return 2 end
+            return 1
+        end
+        k = k + 1
+    end
+    return 0
+end
+
+;; Ile razy fraza występuje w całym pliku.
+pub fn count_all(ed: model::Ed) -> int is
+    if ed.search == "" is return 0 end
+    let needle: string = fold(ed, ed.search)
+    let mut total: int = 0
+    for line in ed.lines is
+        total = total + util::count_text(fold(ed, line), needle)
+    end
+    return total
+end
+
+;; Maska podświetlenia dla jednej linii: znak '1' na każdym bajcie dopasowania.
+;; Pusty napis oznacza „brak dopasowań w tej linii".
+pub fn marks(ed: model::Ed, line: string) -> string is
+    if ed.search == "" || line == "" is return "" end
+    let needle: string = fold(ed, ed.search)
+    let hay: string = fold(ed, line)
+    let mut i: int = util::find_from(hay, needle, 0)
+    if i < 0 is return "" end
+    let m: int = needle.len()
+    let mut out: string = ""
+    let mut pos: int = 0
+    while i >= 0 is
+        out = out + util::rep("0", i - pos) + util::rep("1", m)
+        pos = i + m
+        i = util::find_from(hay, needle, pos)
+    end
+    return out + util::rep("0", line.len() - pos)
+end
+
+;; Zamienia wszystkie wystąpienia `from` na `to` (z rozróżnianiem wielkości liter,
+;; jak `strings.ReplaceAll`). Jedno cofnięcie wycofuje całą zamianę.
+;; Zwraca liczbę zamian.
+pub fn replace_all_text(ed: model::Ed, from: string, to: string) -> int is
+    if from == "" is return 0 end
+    let g: int = textbuf::new_group(ed)
+    let keep_y: int = ed.cy
+    let keep_x: int = ed.cx
+    let mut total: int = 0
+    let mut y: int = 0
+    while y < ed.lines.len() is
+        let line: string = ed.lines[y]
+        let c: int = util::count_text(line, from)
+        if c > 0 is
+            total = total + c
+            textbuf::edit(ed, y, 0, y, line.len(), util::replace_all(line, from, to), "other", g)
+        end
+        y = y + 1
+    end
+    ed.cy = util::clampi(keep_y, 0, ed.lines.len() - 1)
+    ed.cx = util::clampi(keep_x, 0, ed.lines[ed.cy].len())
+    ed.has_sel = false
+    model::remember_col(ed)
+    return total
+end
