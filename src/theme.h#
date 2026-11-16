@@ -1,0 +1,81 @@
+pub struct Palette is
+    pub name: string
+    pub fg_norm: string
+    pub fg_kw: string
+    pub fg_str: string
+    pub fg_com: string
+    pub fg_num: string
+    pub fg_type: string
+    pub fg_fn: string
+    pub fg_op: string
+    pub fg_const: string
+    pub gutter: string
+    pub sel_bg: string
+    pub find_bg: string
+    pub title_fg: string
+    pub title_bg: string
+    pub help_fg: string
+    pub err_fg: string
+    pub prompt_fg: string
+    pub prompt_bg: string
+end
+
+pub fn names() -> [string] is
+    return ["monokai", "dracula", "nord", "gruvbox", "solarized-dark", "github-dark", "one-dark", "github"]
+end
+
+pub fn exists(name: string) -> bool is
+    let all: [string] = names()
+    for n in all is
+        if n == name is return true end
+    end
+    return false
+end
+
+fn mk_palette(name: string, norm: string, kw: string, st: string, com: string, num: string, ty: string, fnc: string, op: string, cst: string, gut: string, sel: string, find: string) -> Palette is
+    return Palette {
+        name: name, fg_norm: norm, fg_kw: kw, fg_str: st, fg_com: com, fg_num: num,
+        fg_type: ty, fg_fn: fnc, fg_op: op, fg_const: cst, gutter: gut, sel_bg: sel, find_bg: find,
+        title_fg: "#FAFAFA", title_bg: "#7D56F4", help_fg: "#626262", err_fg: "#FF0000",
+        prompt_fg: "#FFFF00", prompt_bg: "#000000"
+    }
+end
+
+;; Paleta o podanej nazwie; nieznana nazwa = monokai (jak `styles.Fallback`).
+pub fn get(name: string) -> Palette is
+    if name == "dracula" is
+        return mk_palette("dracula", "#f8f8f2", "#ff79c6", "#f1fa8c", "#6272a4", "#bd93f9", "#8be9fd", "#50fa7b", "#ff79c6", "#bd93f9", "#6272a4", "#44475a", "#665c00")
+    end
+    if name == "nord" is
+        return mk_palette("nord", "#d8dee9", "#81a1c1", "#a3be8c", "#616e88", "#b48ead", "#8fbcbb", "#88c0d0", "#81a1c1", "#b48ead", "#4c566a", "#434c5e", "#5e5a30")
+    end
+    if name == "gruvbox" is
+        return mk_palette("gruvbox", "#ebdbb2", "#fb4934", "#b8bb26", "#928374", "#d3869b", "#fabd2f", "#8ec07c", "#fe8019", "#d3869b", "#7c6f64", "#504945", "#6b5a14")
+    end
+    if name == "solarized-dark" is
+        return mk_palette("solarized-dark", "#93a1a1", "#859900", "#2aa198", "#586e75", "#d33682", "#b58900", "#268bd2", "#859900", "#cb4b16", "#586e75", "#073642", "#5c5200")
+    end
+    if name == "github-dark" is
+        return mk_palette("github-dark", "#c9d1d9", "#ff7b72", "#a5d6ff", "#8b949e", "#79c0ff", "#ffa657", "#d2a8ff", "#ff7b72", "#79c0ff", "#6e7681", "#264f78", "#4d3b00")
+    end
+    if name == "one-dark" is
+        return mk_palette("one-dark", "#abb2bf", "#c678dd", "#98c379", "#5c6370", "#d19a66", "#e5c07b", "#61afef", "#56b6c2", "#d19a66", "#4b5263", "#3e4451", "#5c4d1a")
+    end
+    if name == "github" is
+        return mk_palette("github", "#24292f", "#cf222e", "#0a3069", "#6e7781", "#0550ae", "#953800", "#8250df", "#cf222e", "#0550ae", "#8c959f", "#b6d6f7", "#fff8c5")
+    end
+    return mk_palette("monokai", "#f8f8f2", "#f92672", "#e6db74", "#75715e", "#ae81ff", "#66d9ef", "#a6e22e", "#f92672", "#ae81ff", "#888888", "#555555", "#6b5d12")
+end
+
+;; Kolor pierwszego planu dla klasy tokenu.
+pub fn color_for(p: Palette, cls: string) -> string is
+    if cls == "k" is return p.fg_kw end
+    if cls == "s" is return p.fg_str end
+    if cls == "c" is return p.fg_com end
+    if cls == "d" is return p.fg_num end
+    if cls == "t" is return p.fg_type end
+    if cls == "f" is return p.fg_fn end
+    if cls == "o" is return p.fg_op end
+    if cls == "b" is return p.fg_const end
+    return p.fg_norm
+end
