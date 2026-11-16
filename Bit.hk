@@ -1,1 +1,28 @@
+[package]
+-> name        => hedit
+-> version     => 1.0.0
+-> description => Terminal text editor written in H# on top of the tui library - syntax highlighting, undo/redo, search and replace, selection, clipboard.
+-> authors     => ["HackerOS Team <hackeros068@gmail.com>"]
+-> license     => Apache-2.0
+-> lang        => h#
 
+[edition]
+-> edition   => 2026
+-> toolchain => 0.9
+
+[layout]
+-> src => src
+
+[default-build]
+-> profile => release
+
+[dependencies]
+-> tui => newest
+
+[commands]
+-> check
+--> run => bit check
+--> description => Type-check every module
+-> test
+--> run => bit test
+--> description => Run the #[test] functions of src/selftest.h#
