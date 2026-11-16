@@ -1,0 +1,47 @@
+const CLIP_TMP: string = "/tmp/hedit-clip.tmp"
+
+fn have(name: string) -> bool is
+    let out: string = __builtin_process_run("command -v " + name + " >/dev/null 2>&1 && echo yes")
+    return util::trim_ws(out) == "yes"
+end
+
+;; Komenda zapisująca stdin do schowka ("" = brak narzędzia).
+fn copy_cmd() -> string is
+    if have("wl-copy") is return "wl-copy" end
+    if have("xclip") is return "xclip -selection clipboard" end
+    if have("xsel") is return "xsel --clipboard --input" end
+    if have("pbcopy") is return "pbcopy" end
+    if have("termux-clipboard-set") is return "termux-clipboard-set" end
+    return ""
+end
+
+;; Komenda wypisująca schowek na stdout ("" = brak narzędzia).
+fn paste_cmd() -> string is
+    if have("wl-paste") is return "wl-paste --no-newline" end
+    if have("xclip") is return "xclip -selection clipboard -o" end
+    if have("xsel") is return "xsel --clipboard --output" end
+    if have("pbpaste") is return "pbpaste" end
+    if have("termux-clipboard-get") is return "termux-clipboard-get" end
+    return ""
+end
+
+;; Kopiuje tekst. Zawsze ustawia schowek wewnętrzny; zwraca true, gdy udało się
+;; też zapisać do schowka systemowego.
+pub fn copy(ed: model::Ed, text: string) -> bool is
+    ed.clip = text
+    let cmd: string = copy_cmd()
+    if cmd == "" is return false end
+    if !__builtin_fs_write(CLIP_TMP, text) is return false end
+    let _r: string = __builtin_process_run(cmd + " < " + CLIP_TMP + " >/dev/null 2>&1")
+    return true
+end
+
+;; Zawartość schowka (systemowego, a gdy go brak lub jest pusty – wewnętrznego).
+pub fn paste(ed: model::Ed) -> string is
+    let cmd: string = paste_cmd()
+    if cmd != "" is
+        let out: string = __builtin_process_run(cmd + " 2>/dev/null")
+        if out != "" is return out end
+    end
+    return ed.clip
+end
