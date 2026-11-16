@@ -1,0 +1,376 @@
+fn base_name(path: string) -> string is
+    let n: int = path.len()
+    let mut i: int = n
+    while i > 0 && util::byte_at(path, i - 1) != 47 is
+        i = i - 1
+    end
+    return path[i..n]
+end
+
+pub fn detect(filename: string) -> string is
+    let b: string = util::lower_ascii(base_name(filename))
+    if b == "bit.hk" || b == "bit.lock" is return "bithk" end
+    if b == "makefile" || b == "gnumakefile" || util::ends_with_text(b, ".mk") is return "make" end
+    if b == "dockerfile" || util::ends_with_text(b, ".dockerfile") is return "shell" end
+    if util::ends_with_text(b, ".h#") is return "hsharp" end
+    if util::ends_with_text(b, ".hl") || util::ends_with_text(b, ".hcs") is return "hl" end
+    if util::ends_with_text(b, ".go") is return "go" end
+    if util::ends_with_text(b, ".rs") is return "rust" end
+    if util::ends_with_text(b, ".c") || util::ends_with_text(b, ".h") is return "c" end
+    if util::ends_with_text(b, ".cpp") || util::ends_with_text(b, ".cc") || util::ends_with_text(b, ".hpp") || util::ends_with_text(b, ".cxx") is return "cpp" end
+    if util::ends_with_text(b, ".java") || util::ends_with_text(b, ".cs") || util::ends_with_text(b, ".kt") is return "java" end
+    if util::ends_with_text(b, ".js") || util::ends_with_text(b, ".mjs") || util::ends_with_text(b, ".jsx") is return "js" end
+    if util::ends_with_text(b, ".ts") || util::ends_with_text(b, ".tsx") is return "ts" end
+    if util::ends_with_text(b, ".py") is return "python" end
+    if util::ends_with_text(b, ".sh") || util::ends_with_text(b, ".bash") || util::ends_with_text(b, ".zsh") is return "shell" end
+    if util::ends_with_text(b, ".lua") is return "lua" end
+    if util::ends_with_text(b, ".rb") is return "ruby" end
+    if util::ends_with_text(b, ".sql") is return "sql" end
+    if util::ends_with_text(b, ".json") is return "json" end
+    if util::ends_with_text(b, ".yaml") || util::ends_with_text(b, ".yml") is return "yaml" end
+    if util::ends_with_text(b, ".toml") || util::ends_with_text(b, ".ini") || util::ends_with_text(b, ".cfg") is return "toml" end
+    if util::ends_with_text(b, ".md") || util::ends_with_text(b, ".markdown") is return "markdown" end
+    if util::ends_with_text(b, ".html") || util::ends_with_text(b, ".htm") || util::ends_with_text(b, ".xml") || util::ends_with_text(b, ".svg") is return "html" end
+    if util::ends_with_text(b, ".css") || util::ends_with_text(b, ".scss") is return "css" end
+    return "plain"
+end
+
+;; ── Specyfikacja języków ────────────────────────────────────────────────────
+
+;; Główny prefiks komentarza liniowego (bez końcowej spacji); "" = brak.
+pub fn line_comment(lang: string) -> string is
+    if lang == "hsharp" || lang == "hl" is return ";;" end
+    if lang == "go" || lang == "rust" || lang == "c" || lang == "cpp" || lang == "java" || lang == "js" || lang == "ts" is return "//" end
+    if lang == "python" || lang == "shell" || lang == "ruby" || lang == "yaml" || lang == "toml" || lang == "make" is return "#" end
+    if lang == "lua" || lang == "sql" is return "--" end
+    if lang == "bithk" is return "!" end
+    return ""
+end
+
+fn line_comment2(lang: string) -> string is
+    if lang == "hsharp" is return "///" end
+    if lang == "hl" is return "//" end
+    return ""
+end
+
+pub fn block_open(lang: string) -> string is
+    if lang == "go" || lang == "rust" || lang == "c" || lang == "cpp" || lang == "java" || lang == "js" || lang == "ts" || lang == "css" is return "/*" end
+    if lang == "html" is return "<!--" end
+    if lang == "lua" is return "--[[" end
+    if lang == "hsharp" is return "//" end
+    return ""
+end
+
+pub fn block_close(lang: string) -> string is
+    if lang == "go" || lang == "rust" || lang == "c" || lang == "cpp" || lang == "java" || lang == "js" || lang == "ts" || lang == "css" is return "*/" end
+    if lang == "html" is return "-->" end
+    if lang == "lua" is return "]]" end
+    if lang == "hsharp" is return "\\\\" end
+    return ""
+end
+
+;; Przedrostek i przyrostek komentarza przełączanego przez alt+/ ("" = brak).
+pub fn toggle_prefix(lang: string) -> string is
+    if lang == "html" is return "<!-- " end
+    if lang == "css" is return "/* " end
+    if lang == "markdown" is return "<!-- " end
+    if lang == "json" || lang == "plain" is return "// " end
+    let lc: string = line_comment(lang)
+    if lc == "" is return "// " end
+    return lc + " "
+end
+
+pub fn toggle_suffix(lang: string) -> string is
+    if lang == "html" || lang == "markdown" is return " -->" end
+    if lang == "css" is return " */" end
+    return ""
+end
+
+fn quotes(lang: string) -> string is
+    if lang == "hsharp" || lang == "hl" || lang == "json" || lang == "bithk" is return "\"" end
+    if lang == "js" || lang == "ts" || lang == "go" is return "\"'`" end
+    if lang == "lua" || lang == "ruby" || lang == "shell" || lang == "python" || lang == "yaml" || lang == "toml" || lang == "sql" || lang == "java" || lang == "c" || lang == "cpp" || lang == "rust" || lang == "html" || lang == "css" || lang == "make" is return "\"'" end
+    return ""
+end
+
+fn keywords(lang: string) -> string is
+    if lang == "hsharp" is return " fn let mut if elsif else is end return for in while break continue match struct enum impl trait mod use pub const static async await extern unsafe using as loop where self Self dynamic arena " end
+    if lang == "hl" is return " fn let if else end return for in while match use mod " end
+    if lang == "go" is return " break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var " end
+    if lang == "rust" is return " as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait type unsafe use where while " end
+    if lang == "c" || lang == "cpp" is return " auto break case const continue default do else enum extern for goto if inline register return sizeof static struct switch typedef union volatile while class namespace template typename public private protected virtual new delete using try catch throw operator " end
+    if lang == "java" is return " abstract break case catch class const continue default do else enum extends final finally for if implements import instanceof interface new package private protected public return static super switch this throw throws try void volatile while fun val var when object namespace using " end
+    if lang == "js" || lang == "ts" is return " async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new of return static super switch this throw try typeof var void while with yield interface type enum implements namespace readonly declare " end
+    if lang == "python" is return " and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield " end
+    if lang == "shell" is return " if then else elif fi for while until do done case esac in function select return exit export local readonly source alias unset shift trap " end
+    if lang == "lua" is return " and break do else elseif end for function goto if in local not or repeat return then until while " end
+    if lang == "ruby" is return " alias and begin break case class def defined do else elsif end ensure for if in module next not or redo rescue retry return self super then undef unless until when while yield require include " end
+    if lang == "sql" is return " select from where insert into values update set delete create table drop alter add index join left right inner outer on group by order having limit offset as and or not null is in like between distinct union all primary key foreign references default unique " end
+    if lang == "make" is return " ifeq ifneq ifdef ifndef else endif include define endef export override " end
+    return ""
+end
+
+fn types(lang: string) -> string is
+    if lang == "hsharp" is return " int uint f64 f32 bool string bytes i8 i16 i32 i64 u8 u16 u32 u64 any " end
+    if lang == "go" is return " int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 uintptr float32 float64 string bool byte rune error any " end
+    if lang == "rust" is return " i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str String Vec Option Result Box " end
+    if lang == "c" || lang == "cpp" is return " int long short char float double void unsigned signed size_t bool uint8_t uint16_t uint32_t uint64_t int8_t int16_t int32_t int64_t string vector " end
+    if lang == "java" is return " int long short byte char float double boolean void String Integer Long Boolean Object List Map " end
+    if lang == "ts" is return " string number boolean any void unknown never object " end
+    return ""
+end
+
+fn consts(lang: string) -> string is
+    if lang == "hsharp" || lang == "hl" is return " true false nil " end
+    if lang == "go" is return " true false nil iota " end
+    if lang == "rust" is return " true false None Some Ok Err " end
+    if lang == "c" || lang == "cpp" is return " true false NULL nullptr " end
+    if lang == "java" || lang == "js" || lang == "ts" is return " true false null undefined NaN " end
+    if lang == "python" is return " True False None " end
+    if lang == "lua" || lang == "ruby" is return " true false nil " end
+    if lang == "json" || lang == "yaml" || lang == "toml" is return " true false null yes no on off " end
+    if lang == "sql" is return " true false null " end
+    return ""
+end
+
+;; Czy nazwy zaczynające się wielką literą traktować jak typy.
+fn caps_are_types(lang: string) -> bool is
+    return lang == "hsharp" || lang == "go" || lang == "rust" || lang == "java" || lang == "ts" || lang == "cpp"
+end
+
+fn in_list(list: string, word: string) -> bool is
+    if list == "" is return false end
+    return util::find_from(list, " " + word + " ", 0) >= 0
+end
+
+;; ── Tokenizer ───────────────────────────────────────────────────────────────
+
+;; Początek `#` jako komentarz: tylko na początku linii lub po białym znaku.
+fn hash_ok(line: string, i: int) -> bool is
+    if i == 0 is return true end
+    let p: int = util::byte_at(line, i - 1)
+    return p == 32 || p == 9 || p == 59
+end
+
+;; Koniec napisu otwartego cudzysłowem `q` w bajcie `i` (pozycja za zamykającym).
+fn string_end(line: string, i: int, q: string) -> int is
+    let n: int = line.len()
+    let mut j: int = i + 1
+    while j < n is
+        let ch: string = line[j..j + 1]
+        if ch == "\\" is
+            j = j + 2
+        elsif ch == q is
+            return j + 1
+        else is
+            j = j + 1
+        end
+    end
+    return n
+end
+
+;; Czy `'` w Rust zaczyna literał znakowy (a nie czas życia 'a).
+fn rust_char_lit(line: string, i: int) -> bool is
+    if util::byte_at(line, i + 1) == 92 is return true end
+    return util::byte_at(line, i + 2) == 39
+end
+
+fn tag_end(line: string, i: int) -> int is
+    let e: int = util::find_from(line, ">", i)
+    if e < 0 is return line.len() end
+    return e + 1
+end
+
+;; Markdown: nagłówki, cytaty, bloki kodu, `kod`.
+fn classify_markdown(line: string) -> string is
+    let t: string = util::trim_left(line)
+    let n: int = line.len()
+    if util::starts_at(t, 0, "#") is return util::rep("k", n) end
+    if util::starts_at(t, 0, "```") || util::starts_at(t, 0, "~~~") is return util::rep("s", n) end
+    if util::starts_at(t, 0, ">") is return util::rep("c", n) end
+    let mut out: string = ""
+    let mut i: int = 0
+    while i < n is
+        if line[i..i + 1] == "`" is
+            let e: int = util::find_from(line, "`", i + 1)
+            let stop: int = if e < 0 is n else is e + 1 end
+            out = out + util::rep("s", stop - i)
+            i = stop
+        elsif (line[i..i + 1] == "-" || line[i..i + 1] == "*" || line[i..i + 1] == "+") && i == line.len() - t.len() && util::byte_at(line, i + 1) == 32 is
+            out = out + "o"
+            i = i + 1
+        else is
+            out = out + "n"
+            i = i + 1
+        end
+    end
+    return out
+end
+
+;; Bit.hk: `! komentarz`, `[sekcja]`, `-> klucz => wartość`, `--> podklucz => ...`.
+fn classify_bithk(line: string) -> string is
+    let n: int = line.len()
+    let t: string = util::trim_left(line)
+    let ind: int = n - t.len()
+    if t == "" is return util::rep("n", n) end
+    if util::starts_at(t, 0, "!") is return util::rep("c", n) end
+    if util::starts_at(t, 0, "[") is return util::rep("k", n) end
+    if util::starts_at(t, 0, "-") is
+        let mut i: int = ind
+        while i < n && line[i..i + 1] == "-" is
+            i = i + 1
+        end
+        if i < n && line[i..i + 1] == ">" is i = i + 1 end
+        let arrow_end: int = i
+        while i < n && line[i..i + 1] == " " is
+            i = i + 1
+        end
+        let key_start: int = i
+        let sep: int = util::find_from(line, "=>", i)
+        let key_end: int = if sep < 0 is n else is sep end
+        let mut out: string = util::rep("n", ind) + util::rep("o", arrow_end - ind) + util::rep("n", key_start - arrow_end)
+        out = out + util::rep("t", key_end - key_start)
+        if sep >= 0 is
+            out = out + "oo" + util::rep("s", n - sep - 2)
+        end
+        return out
+    end
+    return util::rep("n", n)
+end
+
+fn classify_generic(line: string, lang: string) -> string is
+    let n: int = line.len()
+    let lc: string = line_comment(lang)
+    let lc2: string = line_comment2(lang)
+    let bo: string = block_open(lang)
+    let bc: string = block_close(lang)
+    let qs: string = quotes(lang)
+    let kw: string = keywords(lang)
+    let tys: string = types(lang)
+    let cs: string = consts(lang)
+    let caps: bool = caps_are_types(lang)
+    let hash_style: bool = lc == "#"
+    let block_first: bool = lang == "lua"
+    let is_c: bool = lang == "c" || lang == "cpp"
+    let is_html: bool = lang == "html"
+    let mut out: string = ""
+    let mut i: int = 0
+    while i < n is
+        let ch: string = line[i..i + 1]
+        let b: int = util::byte_at(line, i)
+
+        ;; komentarz blokowy (w obrębie jednej linii)
+        if bo != "" && block_first && util::starts_at(line, i, bo) is
+            let e: int = util::find_from(line, bc, i + bo.len())
+            let stop: int = if e < 0 is n else is e + bc.len() end
+            out = out + util::rep("c", stop - i)
+            i = stop
+            continue
+        end
+
+        ;; komentarz liniowy
+        if lc != "" && util::starts_at(line, i, lc) && (!hash_style || hash_ok(line, i)) is
+            out = out + util::rep("c", n - i)
+            i = n
+            continue
+        end
+        if lc2 != "" && util::starts_at(line, i, lc2) is
+            out = out + util::rep("c", n - i)
+            i = n
+            continue
+        end
+
+        if bo != "" && !block_first && util::starts_at(line, i, bo) is
+            let e: int = util::find_from(line, bc, i + bo.len())
+            let stop: int = if e < 0 is n else is e + bc.len() end
+            out = out + util::rep("c", stop - i)
+            i = stop
+            continue
+        end
+
+        ;; znaczniki HTML/XML
+        if is_html && ch == "<" is
+            let stop: int = tag_end(line, i)
+            out = out + util::rep("k", stop - i)
+            i = stop
+            continue
+        end
+
+        ;; dyrektywy preprocesora C i atrybuty H# (#[test])
+        if ch == "#" && (is_c || lang == "hsharp") && util::trim_left(line[0..i]) == "" is
+            let mut j: int = i + 1
+            while j < n && (util::is_ident_byte(util::byte_at(line, j)) || line[j..j + 1] == "[" || line[j..j + 1] == "]") is
+                j = j + 1
+            end
+            out = out + util::rep("k", j - i)
+            i = j
+            continue
+        end
+
+        ;; napisy
+        if qs != "" && util::find_from(qs, ch, 0) >= 0 && !(lang == "rust" && ch == "'" && !rust_char_lit(line, i)) is
+            let stop: int = string_end(line, i, ch)
+            out = out + util::rep("s", stop - i)
+            i = stop
+            continue
+        end
+
+        ;; liczby
+        if util::is_digit_byte(b) && (i == 0 || !util::is_ident_byte(util::byte_at(line, i - 1))) is
+            let mut j: int = i + 1
+            while j < n && (util::is_ident_byte(util::byte_at(line, j)) || line[j..j + 1] == ".") is
+                j = j + 1
+            end
+            out = out + util::rep("d", j - i)
+            i = j
+            continue
+        end
+
+        ;; identyfikatory
+        if util::is_ident_start(b) is
+            let mut j: int = i + 1
+            while j < n && util::is_ident_byte(util::byte_at(line, j)) is
+                j = j + 1
+            end
+            let word: string = line[i..j]
+            let key: string = if lang == "sql" is util::lower_ascii(word) else is word end
+            let mut cls: string = "n"
+            if in_list(kw, key) is
+                cls = "k"
+            elsif in_list(cs, key) is
+                cls = "b"
+            elsif in_list(tys, key) is
+                cls = "t"
+            elsif caps && b >= 65 && b <= 90 is
+                cls = "t"
+            else is
+                let mut k: int = j
+                while k < n && (line[k..k + 1] == " " || line[k..k + 1] == "\t") is
+                    k = k + 1
+                end
+                if k < n && line[k..k + 1] == "(" is cls = "f" end
+            end
+            out = out + util::rep(cls, j - i)
+            i = j
+            continue
+        end
+
+        ;; operatory i interpunkcja
+        if util::find_from("+-*/%=<>!&|^~?:.,;(){}[]@$", ch, 0) >= 0 is
+            out = out + "o"
+        else is
+            out = out + "n"
+        end
+        i = i + 1
+    end
+    return out
+end
+
+;; Klasy tokenów dla każdego bajtu linii.
+pub fn classify(line: string, lang: string) -> string is
+    if line == "" is return "" end
+    if lang == "markdown" is return classify_markdown(line) end
+    if lang == "bithk" is return classify_bithk(line) end
+    if lang == "plain" is return util::rep("n", line.len()) end
+    return classify_generic(line, lang)
+end
