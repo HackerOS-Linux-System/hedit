@@ -1,0 +1,348 @@
+pub fn mini(a: int, b: int) -> int is
+    if a < b is return a end
+    return b
+end
+
+pub fn maxi(a: int, b: int) -> int is
+    if a > b is return a end
+    return b
+end
+
+pub fn clampi(n: int, lo: int, hi: int) -> int is
+    if n < lo is return lo end
+    if n > hi is return hi end
+    return n
+end
+
+pub fn rep(s: string, n: int) -> string is
+    let mut out: string = ""
+    let mut i: int = 0
+    while i < n is
+        out = out + s
+        i = i + 1
+    end
+    return out
+end
+
+;; Wartość bajtu na pozycji `i` (0 gdy poza napisem).
+pub fn byte_at(s: string, i: int) -> int is
+    if i < 0 || i >= s.len() is return 0 end
+    return __builtin_str_to_char_code(s[i..i + 1])
+end
+
+;; Bajt kontynuacji UTF-8 (10xxxxxx) – nie zaczyna nowego znaku.
+pub fn is_cont(b: int) -> bool is
+    return b >= 128 && b < 192
+end
+
+;; Początek znaku poprzedzającego bajt `pos`.
+pub fn prev_pos(s: string, pos: int) -> int is
+    if pos <= 0 is return 0 end
+    let mut p: int = pos - 1
+    while p > 0 && is_cont(byte_at(s, p)) is
+        p = p - 1
+    end
+    return p
+end
+
+;; Początek znaku następnego po znaku zaczynającym się w `pos`.
+pub fn next_pos(s: string, pos: int) -> int is
+    let n: int = s.len()
+    if pos >= n is return n end
+    let mut p: int = pos + 1
+    while p < n && is_cont(byte_at(s, p)) is
+        p = p + 1
+    end
+    return p
+end
+
+;; Kod Unicode znaku zaczynającego się w bajcie `i`.
+pub fn codepoint_at(s: string, i: int) -> int is
+    let n: int = s.len()
+    let b0: int = byte_at(s, i)
+    if b0 < 128 is return b0 end
+    if b0 < 192 is return 65533 end
+    if b0 < 224 && i + 1 < n is
+        return (b0 - 192) * 64 + (byte_at(s, i + 1) - 128)
+    end
+    if b0 < 240 && i + 2 < n is
+        return (b0 - 224) * 4096 + (byte_at(s, i + 1) - 128) * 64 + (byte_at(s, i + 2) - 128)
+    end
+    if i + 3 < n is
+        return (b0 - 240) * 262144 + (byte_at(s, i + 1) - 128) * 4096 + (byte_at(s, i + 2) - 128) * 64 + (byte_at(s, i + 3) - 128)
+    end
+    return 65533
+end
+
+;; Szerokość znaku w komórkach terminala (0, 1 lub 2) – uproszczone wcwidth.
+pub fn cp_width(cp: int) -> int is
+    if cp < 768 is return 1 end
+    if cp <= 879 is return 0 end
+    if cp >= 4352 && cp <= 4447 is return 2 end
+    if cp >= 11904 && cp <= 42191 is return 2 end
+    if cp >= 44032 && cp <= 55203 is return 2 end
+    if cp >= 63744 && cp <= 64255 is return 2 end
+    if cp >= 65040 && cp <= 65049 is return 2 end
+    if cp >= 65072 && cp <= 65135 is return 2 end
+    if cp >= 65281 && cp <= 65376 is return 2 end
+    if cp >= 65504 && cp <= 65510 is return 2 end
+    if cp >= 127744 && cp <= 128591 is return 2 end
+    if cp >= 129280 && cp <= 129535 is return 2 end
+    if cp >= 131072 && cp <= 262141 is return 2 end
+    return 1
+end
+
+;; Szerokość znaku w kolumnie `col` (tabulator wyrównuje do `tw`).
+pub fn cell_width(cp: int, col: int, tw: int) -> int is
+    if cp == 9 is return tw - (col % tw) end
+    return cp_width(cp)
+end
+
+;; Kolumna ekranowa bajtu `bytepos` w linii.
+pub fn visual_col(line: string, bytepos: int, tw: int) -> int is
+    let n: int = line.len()
+    let mut col: int = 0
+    let mut j: int = 0
+    while j < bytepos && j < n is
+        col = col + cell_width(codepoint_at(line, j), col, tw)
+        j = next_pos(line, j)
+    end
+    return col
+end
+
+;; Największy bajt, którego kolumna nie przekracza `target` (jak bytePosFromVisual).
+pub fn byte_from_visual(line: string, target: int, tw: int) -> int is
+    let n: int = line.len()
+    let mut col: int = 0
+    let mut j: int = 0
+    while j < n is
+        let w: int = cell_width(codepoint_at(line, j), col, tw)
+        if col + w > target is break end
+        col = col + w
+        j = next_pos(line, j)
+    end
+    return j
+end
+
+;; Czy bajt to biały znak ASCII.
+pub fn is_space_byte(b: int) -> bool is
+    return b == 32 || b == 9 || b == 10 || b == 13 || b == 11 || b == 12
+end
+
+pub fn is_digit_byte(b: int) -> bool is
+    return b >= 48 && b <= 57
+end
+
+;; Litera ASCII, '_' albo bajt wielobajtowego znaku UTF-8.
+pub fn is_ident_start(b: int) -> bool is
+    return (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95 || b >= 128
+end
+
+pub fn is_ident_byte(b: int) -> bool is
+    return is_ident_start(b) || is_digit_byte(b)
+end
+
+;; Wcięcie (spacje/tabulatory) na początku linii.
+pub fn leading_ws(s: string) -> string is
+    let n: int = s.len()
+    let mut i: int = 0
+    while i < n && (byte_at(s, i) == 32 || byte_at(s, i) == 9) is
+        i = i + 1
+    end
+    return s[0..i]
+end
+
+;; Linia bez wcięcia.
+pub fn trim_left(s: string) -> string is
+    let w: int = leading_ws(s).len()
+    return s[w..s.len()]
+end
+
+;; Początek słowa (słowo = ciąg znaków niebiałych) przed/na pozycji pos.
+pub fn word_start(line: string, pos: int) -> int is
+    let mut i: int = pos
+    while i > 0 && is_space_byte(byte_at(line, prev_pos(line, i))) is
+        i = prev_pos(line, i)
+    end
+    while i > 0 && !is_space_byte(byte_at(line, prev_pos(line, i))) is
+        i = prev_pos(line, i)
+    end
+    return i
+end
+
+;; Koniec słowa na/po pozycji pos.
+pub fn word_end(line: string, pos: int) -> int is
+    let n: int = line.len()
+    let mut i: int = pos
+    while i < n && is_space_byte(byte_at(line, i)) is
+        i = next_pos(line, i)
+    end
+    while i < n && !is_space_byte(byte_at(line, i)) is
+        i = next_pos(line, i)
+    end
+    return i
+end
+
+;; Czy `s` ma na pozycji `i` dokładnie napis `sub`.
+pub fn starts_at(s: string, i: int, sub: string) -> bool is
+    let m: int = sub.len()
+    if m == 0 || i < 0 || i + m > s.len() is return false end
+    return s[i..i + m] == sub
+end
+
+pub fn ends_with_text(s: string, suffix: string) -> bool is
+    let m: int = suffix.len()
+    if m > s.len() is return false end
+    return s[s.len() - m..s.len()] == suffix
+end
+
+;; Pierwsze wystąpienie `needle` w `hay` od bajtu `start`; -1 gdy brak.
+pub fn find_from(hay: string, needle: string, start: int) -> int is
+    let m: int = needle.len()
+    let n: int = hay.len()
+    if m == 0 is return -1 end
+    let first: int = byte_at(needle, 0)
+    let mut i: int = maxi(0, start)
+    while i + m <= n is
+        if byte_at(hay, i) == first && hay[i..i + m] == needle is return i end
+        i = i + 1
+    end
+    return -1
+end
+
+;; Ostatnie wystąpienie `needle` zaczynające się przed bajtem `before`; -1 gdy brak.
+pub fn find_last_before(hay: string, needle: string, before: int) -> int is
+    let m: int = needle.len()
+    if m == 0 is return -1 end
+    let mut i: int = mini(before - 1, hay.len() - m)
+    while i >= 0 is
+        if hay[i..i + m] == needle is return i end
+        i = i - 1
+    end
+    return -1
+end
+
+;; Ile razy `needle` występuje (bez nakładania) w `hay`.
+pub fn count_text(hay: string, needle: string) -> int is
+    if needle.len() == 0 is return 0 end
+    let mut cnt: int = 0
+    let mut i: int = find_from(hay, needle, 0)
+    while i >= 0 is
+        cnt = cnt + 1
+        i = find_from(hay, needle, i + needle.len())
+    end
+    return cnt
+end
+
+;; Zamiana wszystkich wystąpień.
+pub fn replace_all(s: string, from: string, to: string) -> string is
+    if from.len() == 0 is return s end
+    let mut out: string = ""
+    let mut pos: int = 0
+    let mut i: int = find_from(s, from, 0)
+    while i >= 0 is
+        out = out + s[pos..i] + to
+        pos = i + from.len()
+        i = find_from(s, from, pos)
+    end
+    return out + s[pos..s.len()]
+end
+
+;; Małe litery ASCII.
+pub fn lower_ascii(s: string) -> string is
+    let upper: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    let lower: string = "abcdefghijklmnopqrstuvwxyz"
+    let n: int = s.len()
+    let mut out: string = ""
+    let mut i: int = 0
+    while i < n is
+        let b: int = byte_at(s, i)
+        if b >= 65 && b <= 90 is
+            out = out + lower[b - 65..b - 64]
+        else is
+            out = out + s[i..i + 1]
+        end
+        i = i + 1
+    end
+    return out
+end
+
+;; Czy napis nie zawiera wielkich liter ASCII (dla „smart case" wyszukiwania).
+pub fn all_lower(s: string) -> bool is
+    let n: int = s.len()
+    let mut i: int = 0
+    while i < n is
+        let b: int = byte_at(s, i)
+        if b >= 65 && b <= 90 is return false end
+        i = i + 1
+    end
+    return true
+end
+
+;; Liczba znaków (nie bajtów).
+pub fn char_len(s: string) -> int is
+    let n: int = s.len()
+    let mut cnt: int = 0
+    let mut i: int = 0
+    while i < n is
+        if !is_cont(byte_at(s, i)) is cnt = cnt + 1 end
+        i = i + 1
+    end
+    return cnt
+end
+
+;; Liczba cyfr dziesiętnych liczby nieujemnej.
+pub fn digits(n: int) -> int is
+    let mut d: int = 1
+    let mut v: int = n
+    while v >= 10 is
+        v = v / 10
+        d = d + 1
+    end
+    return d
+end
+
+;; Napis składający się wyłącznie z cyfr (i niepusty).
+pub fn is_number(s: string) -> bool is
+    let n: int = s.len()
+    if n == 0 is return false end
+    let mut i: int = 0
+    while i < n is
+        if !is_digit_byte(byte_at(s, i)) is return false end
+        i = i + 1
+    end
+    return true
+end
+
+;; Bezpieczne cytowanie dla powłoki POSIX.
+pub fn sq(s: string) -> string is
+    return "'" + replace_all(s, "'", "'\\''") + "'"
+end
+
+pub fn trim_ws(s: string) -> string is
+    let n: int = s.len()
+    let mut i: int = 0
+    while i < n && is_space_byte(byte_at(s, i)) is
+        i = i + 1
+    end
+    let mut j: int = n
+    while j > i && is_space_byte(byte_at(s, j - 1)) is
+        j = j - 1
+    end
+    return s[i..j]
+end
+
+;; Podział na linie po "\n" (zachowuje puste linie; "" -> [""]). Działa w O(n),
+;; w przeciwieństwie do `str_split`, które liczy każdy kawałek od początku.
+pub fn split_lines(s: string) -> [string] is
+    let mut out: [string] = []
+    let mut pos: int = 0
+    let mut i: int = find_from(s, "\n", 0)
+    while i >= 0 is
+        out.push(s[pos..i])
+        pos = i + 1
+        i = find_from(s, "\n", pos)
+    end
+    out.push(s[pos..s.len()])
+    return out
+end
