@@ -1,0 +1,183 @@
+use "std -> test" from "test"
+use "bit -> tui" from "tui"
+
+;; Testy jednostkowe: `bit test` (funkcje oznaczone #[test]). Plik nie jest
+;; częścią aplikacji – nie jest wymieniony w main.h#.
+mod util
+mod theme
+mod syntax
+mod model
+mod textbuf
+mod clip
+mod search
+
+const TEST_FILE: string = "/tmp/hedit-selftest.txt"
+
+fn fresh(content: string) -> model::Ed is
+    let _w: bool = __builtin_fs_write(TEST_FILE, content)
+    return model::load_file(TEST_FILE, "monokai", 4, true)
+end
+
+;; ── util ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_utf8_navigation() is
+    let s: string = "aąb"
+    assert_eq(s.len(), 4)
+    assert_eq(util::next_pos(s, 0), 1)
+    assert_eq(util::next_pos(s, 1), 3)
+    assert_eq(util::prev_pos(s, 3), 1)
+    assert_eq(util::prev_pos(s, 1), 0)
+    assert_eq(util::char_len(s), 3)
+    assert_eq(util::codepoint_at(s, 1), 261)
+end
+
+#[test]
+fn test_visual_columns() is
+    assert_eq(util::visual_col("a\tb", 2, 4), 4)
+    assert_eq(util::visual_col("a\tb", 3, 4), 5)
+    assert_eq(util::byte_from_visual("a\tb", 4, 4), 2)
+    assert_eq(util::visual_col("日本", 3, 4), 2)
+    assert_eq(util::visual_col("日本", 6, 4), 4)
+end
+
+#[test]
+fn test_find_and_replace() is
+    assert_eq(util::find_from("hello hello", "llo", 0), 2)
+    assert_eq(util::find_from("hello hello", "llo", 3), 8)
+    assert_eq(util::find_from("hello", "xyz", 0), -1)
+    assert_eq(util::count_text("aaaa", "aa"), 2)
+    assert_eq(util::replace_all("a-b-c", "-", "+"), "a+b+c")
+    assert_eq(util::lower_ascii("HeLLo"), "hello")
+    assert_true(util::all_lower("abc"))
+    assert_false(util::all_lower("aBc"))
+end
+
+#[test]
+fn test_split_lines() is
+    assert_eq(util::split_lines("").len(), 1)
+    assert_eq(util::split_lines("a\nb").len(), 2)
+    assert_eq(util::split_lines("a\n").len(), 2)
+    let mid: [string] = util::split_lines("a\n\nb")
+    assert_eq(mid[1], "")
+end
+
+#[test]
+fn test_words_and_indent() is
+    assert_eq(util::leading_ws("    x"), "    ")
+    assert_eq(util::word_start("foo bar", 7), 4)
+    assert_eq(util::word_end("foo bar", 0), 3)
+end
+
+;; ── syntax ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_detect_language() is
+    assert_eq(syntax::detect("src/main.h#"), "hsharp")
+    assert_eq(syntax::detect("Bit.hk"), "bithk")
+    assert_eq(syntax::detect("a/b/main.go"), "go")
+    assert_eq(syntax::detect("README.md"), "markdown")
+    assert_eq(syntax::detect("notes.txt"), "plain")
+end
+
+#[test]
+fn test_classify_hsharp() is
+    let c: string = syntax::classify("fn main() ;; hi", "hsharp")
+    assert_eq(c.len(), 15)
+    assert_eq(c[0..2], "kk")
+    assert_eq(c[3..7], "ffff")
+    assert_eq(c[10..15], "ccccc")
+    let s: string = syntax::classify("let x = \"a;;b\"", "hsharp")
+    assert_eq(s[8..13], "sssss")
+end
+
+#[test]
+fn test_classify_misc() is
+    assert_eq(syntax::classify("# title", "markdown"), "kkkkkkk")
+    assert_eq(syntax::classify("! note", "bithk"), "cccccc")
+    assert_eq(syntax::classify("", "go"), "")
+    let g: string = syntax::classify("x := 42 // n", "go")
+    assert_eq(g.len(), 12)
+    assert_eq(g[5..7], "dd")
+    assert_eq(g[8..12], "cccc")
+end
+
+;; ── model / textbuf ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_load_and_text_between() is
+    let ed: model::Ed = fresh("alpha\nbeta\ngamma\n")
+    assert_eq(ed.lines.len(), 3)
+    assert_eq(model::text_between(ed, 0, 2, 2, 3), "pha\nbeta\ngam")
+end
+
+#[test]
+fn test_edit_undo_redo() is
+    let ed: model::Ed = fresh("alpha\nbeta\n")
+    textbuf::edit(ed, 0, 5, 0, 5, "!", "type", 0)
+    assert_eq(ed.lines[0], "alpha!")
+    textbuf::edit(ed, 0, 2, 1, 2, "", "other", 0)
+    assert_eq(ed.lines.len(), 1)
+    assert_eq(ed.lines[0], "alta")
+    assert_true(textbuf::undo(ed))
+    assert_eq(ed.lines.len(), 2)
+    assert_eq(ed.lines[0], "alpha!")
+    assert_eq(ed.lines[1], "beta")
+    assert_true(textbuf::redo(ed))
+    assert_eq(ed.lines[0], "alta")
+    assert_true(textbuf::undo(ed))
+    assert_true(textbuf::undo(ed))
+    assert_eq(ed.lines[0], "alpha")
+    assert_false(textbuf::undo(ed))
+end
+
+#[test]
+fn test_typing_is_merged() is
+    let ed: model::Ed = fresh("x\n")
+    textbuf::edit(ed, 0, 1, 0, 1, "a", "type", 0)
+    textbuf::edit(ed, 0, 2, 0, 2, "b", "type", 0)
+    textbuf::edit(ed, 0, 3, 0, 3, "c", "type", 0)
+    assert_eq(ed.lines[0], "xabc")
+    assert_eq(ed.undo.len(), 1)
+    assert_true(textbuf::undo(ed))
+    assert_eq(ed.lines[0], "x")
+end
+
+#[test]
+fn test_replace_all_is_one_undo() is
+    let ed: model::Ed = fresh("foo a\nb foo foo\nc\n")
+    let n: int = search::replace_all_text(ed, "foo", "bar")
+    assert_eq(n, 3)
+    assert_eq(ed.lines[0], "bar a")
+    assert_eq(ed.lines[1], "b bar bar")
+    assert_true(textbuf::undo(ed))
+    assert_eq(ed.lines[0], "foo a")
+    assert_eq(ed.lines[1], "b foo foo")
+end
+
+#[test]
+fn test_search_marks_and_find() is
+    let ed: model::Ed = fresh("one two\nTwo three\n")
+    ed.search = "two"
+    assert_eq(search::marks(ed, "one two"), "0000111")
+    assert_eq(search::marks(ed, "Two three"), "111000000")
+    assert_eq(search::find_next(ed, true), 1)
+    assert_eq(ed.cy, 0)
+    assert_eq(ed.cx, 4)
+    assert_eq(search::find_next(ed, false), 1)
+    assert_eq(ed.cy, 1)
+    assert_eq(search::find_next(ed, false), 2)
+    assert_eq(ed.cy, 0)
+    ed.search = "zzz"
+    assert_eq(search::find_next(ed, false), 0)
+end
+
+#[test]
+fn test_save_roundtrip_and_crlf() is
+    let ed: model::Ed = fresh("a\r\nb\r\n")
+    assert_true(ed.crlf)
+    assert_eq(ed.lines.len(), 2)
+    ed.backup = false
+    assert_true(model::save(ed))
+    assert_eq(__builtin_fs_read(TEST_FILE), "a\r\nb\r\n")
+end
