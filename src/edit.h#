@@ -1,0 +1,448 @@
+fn begin_move(ed: model::Ed, extend: bool) is
+    if extend is
+        if !ed.has_sel is
+            ed.has_sel = true
+            ed.ay = ed.cy
+            ed.ax = ed.cx
+        end
+    else is
+        ed.has_sel = false
+    end
+end
+
+pub fn move_left(ed: model::Ed, extend: bool) is
+    if !extend && model::has_real_sel(ed) is
+        let (sy, sx, ey, ex) = model::sel_bounds(ed)
+        ed.cy = sy
+        ed.cx = sx
+        ed.has_sel = false
+        model::remember_col(ed)
+        return
+    end
+    begin_move(ed, extend)
+    if ed.cx > 0 is
+        ed.cx = util::prev_pos(ed.lines[ed.cy], ed.cx)
+    elsif ed.cy > 0 is
+        ed.cy = ed.cy - 1
+        ed.cx = ed.lines[ed.cy].len()
+    end
+    model::remember_col(ed)
+end
+
+pub fn move_right(ed: model::Ed, extend: bool) is
+    if !extend && model::has_real_sel(ed) is
+        let (sy, sx, ey, ex) = model::sel_bounds(ed)
+        ed.cy = ey
+        ed.cx = ex
+        ed.has_sel = false
+        model::remember_col(ed)
+        return
+    end
+    begin_move(ed, extend)
+    let line: string = ed.lines[ed.cy]
+    if ed.cx < line.len() is
+        ed.cx = util::next_pos(line, ed.cx)
+    elsif ed.cy < ed.lines.len() - 1 is
+        ed.cy = ed.cy + 1
+        ed.cx = 0
+    end
+    model::remember_col(ed)
+end
+
+;; Przesunięcie o `delta` linii z zachowaniem pożądanej kolumny.
+fn move_lines(ed: model::Ed, delta: int, extend: bool) is
+    begin_move(ed, extend)
+    let target: int = ed.cy + delta
+    if target < 0 is
+        ed.cy = 0
+        ed.cx = 0
+        model::remember_col(ed)
+        return
+    end
+    if target > ed.lines.len() - 1 is
+        ed.cy = ed.lines.len() - 1
+        ed.cx = ed.lines[ed.cy].len()
+        model::remember_col(ed)
+        return
+    end
+    ed.cy = target
+    ed.cx = util::byte_from_visual(ed.lines[ed.cy], ed.want_col, ed.tab_w)
+end
+
+pub fn move_up(ed: model::Ed, extend: bool) is
+    move_lines(ed, 0 - 1, extend)
+end
+
+pub fn move_down(ed: model::Ed, extend: bool) is
+    move_lines(ed, 1, extend)
+end
+
+pub fn page_up(ed: model::Ed, extend: bool) is
+    move_lines(ed, 0 - util::maxi(1, ed.height - 1), extend)
+end
+
+pub fn page_down(ed: model::Ed, extend: bool) is
+    move_lines(ed, util::maxi(1, ed.height - 1), extend)
+end
+
+;; Home: pierwszy znak niebiały; przy ponownym naciśnięciu – początek linii.
+pub fn home(ed: model::Ed, extend: bool) is
+    begin_move(ed, extend)
+    let line: string = ed.lines[ed.cy]
+    let indent: int = util::leading_ws(line).len()
+    if ed.cx == indent || indent >= line.len() is
+        ed.cx = 0
+    else is
+        ed.cx = indent
+    end
+    model::remember_col(ed)
+end
+
+pub fn end_of_line(ed: model::Ed, extend: bool) is
+    begin_move(ed, extend)
+    ed.cx = ed.lines[ed.cy].len()
+    model::remember_col(ed)
+end
+
+pub fn word_left(ed: model::Ed, extend: bool) is
+    begin_move(ed, extend)
+    if ed.cx == 0 is
+        if ed.cy > 0 is
+            ed.cy = ed.cy - 1
+            ed.cx = ed.lines[ed.cy].len()
+        end
+    else is
+        ed.cx = util::word_start(ed.lines[ed.cy], ed.cx)
+    end
+    model::remember_col(ed)
+end
+
+pub fn word_right(ed: model::Ed, extend: bool) is
+    begin_move(ed, extend)
+    let line: string = ed.lines[ed.cy]
+    if ed.cx >= line.len() is
+        if ed.cy < ed.lines.len() - 1 is
+            ed.cy = ed.cy + 1
+            ed.cx = 0
+        end
+    else is
+        ed.cx = util::word_end(line, ed.cx)
+    end
+    model::remember_col(ed)
+end
+
+pub fn doc_start(ed: model::Ed, extend: bool) is
+    begin_move(ed, extend)
+    ed.cy = 0
+    ed.cx = 0
+    model::remember_col(ed)
+end
+
+pub fn doc_end(ed: model::Ed, extend: bool) is
+    begin_move(ed, extend)
+    ed.cy = ed.lines.len() - 1
+    ed.cx = ed.lines[ed.cy].len()
+    model::remember_col(ed)
+end
+
+;; Skok do linii (numeracja od 1, wartość poza zakresem jest przycinana).
+pub fn goto_line(ed: model::Ed, n: int) is
+    ed.has_sel = false
+    ed.cy = util::clampi(n - 1, 0, ed.lines.len() - 1)
+    ed.cx = 0
+    model::remember_col(ed)
+    ed.oy = util::maxi(0, ed.cy - ed.height / 2)
+end
+
+pub fn select_all(ed: model::Ed) is
+    ed.has_sel = true
+    ed.ay = 0
+    ed.ax = 0
+    ed.cy = ed.lines.len() - 1
+    ed.cx = ed.lines[ed.cy].len()
+    model::remember_col(ed)
+end
+
+;; ── Wstawianie i usuwanie ───────────────────────────────────────────────────
+
+pub fn delete_selection(ed: model::Ed) is
+    let (sy, sx, ey, ex) = model::sel_bounds(ed)
+    textbuf::edit(ed, sy, sx, ey, ex, "", "other", 0)
+end
+
+;; Wstawia tekst w miejscu kursora (albo zamiast zaznaczenia).
+pub fn insert_text(ed: model::Ed, text: string, kind: string) is
+    if model::has_real_sel(ed) is
+        let (sy, sx, ey, ex) = model::sel_bounds(ed)
+        textbuf::edit(ed, sy, sx, ey, ex, text, "other", 0)
+    else is
+        textbuf::edit(ed, ed.cy, ed.cx, ed.cy, ed.cx, text, kind, 0)
+    end
+end
+
+;; Enter – nowa linia z wcięciem poprzedniej (w trakcie wklejania: bez wcięcia).
+pub fn newline(ed: model::Ed) is
+    let mut ind: string = ""
+    if !ed.pasting is
+        let (sy, sx, ey, ex) = model::sel_bounds(ed)
+        let l: string = ed.lines[sy]
+        ind = util::leading_ws(l[0..sx])
+    end
+    insert_text(ed, "\n" + ind, "other")
+end
+
+pub fn backspace(ed: model::Ed) is
+    if model::has_real_sel(ed) is
+        delete_selection(ed)
+        return
+    end
+    if ed.cx > 0 is
+        let p: int = util::prev_pos(ed.lines[ed.cy], ed.cx)
+        textbuf::edit(ed, ed.cy, p, ed.cy, ed.cx, "", "back", 0)
+    elsif ed.cy > 0 is
+        let prev_len: int = ed.lines[ed.cy - 1].len()
+        textbuf::edit(ed, ed.cy - 1, prev_len, ed.cy, 0, "", "other", 0)
+    end
+end
+
+pub fn delete_key(ed: model::Ed) is
+    if model::has_real_sel(ed) is
+        delete_selection(ed)
+        return
+    end
+    let line: string = ed.lines[ed.cy]
+    if ed.cx < line.len() is
+        let nx: int = util::next_pos(line, ed.cx)
+        textbuf::edit(ed, ed.cy, ed.cx, ed.cy, nx, "", "del", 0)
+    elsif ed.cy < ed.lines.len() - 1 is
+        textbuf::edit(ed, ed.cy, line.len(), ed.cy + 1, 0, "", "other", 0)
+    end
+end
+
+;; Jednostka wcięcia: spacje (domyślnie) albo tabulator.
+fn indent_unit(ed: model::Ed) -> string is
+    if ed.soft_tabs is return util::rep(" ", ed.tab_w) end
+    return "\t"
+end
+
+;; Zakres linii objętych zaznaczeniem (bez ostatniej, gdy zaznaczenie kończy się w kolumnie 0).
+fn line_range(ed: model::Ed) -> (int, int) is
+    if !model::has_real_sel(ed) is return (ed.cy, ed.cy) end
+    let (sy, sx, ey, ex) = model::sel_bounds(ed)
+    if ey > sy && ex == 0 is return (sy, ey - 1) end
+    return (sy, ey)
+end
+
+;; Odtwarza zaznaczenie po zmianie wcięć: kotwica w (sy, sx+d1), kursor w (ey, ex+d2).
+fn restore_sel(ed: model::Ed, sy: int, sx: int, d1: int, ey: int, ex: int, d2: int) is
+    ed.has_sel = true
+    ed.ay = sy
+    ed.ax = util::clampi(sx + d1, 0, ed.lines[sy].len())
+    ed.cy = ey
+    ed.cx = util::clampi(ex + d2, 0, ed.lines[ey].len())
+    model::remember_col(ed)
+end
+
+;; Wcięcie / wycofanie wcięcia linii zaznaczenia (albo bieżącej linii).
+pub fn indent_lines(ed: model::Ed, dedent: bool) is
+    let (sy, sx, ey, ex) = model::sel_bounds(ed)
+    let had_sel: bool = model::has_real_sel(ed)
+    let (first, last) = line_range(ed)
+    let g: int = textbuf::new_group(ed)
+    let unit: string = indent_unit(ed)
+    let mut d_first: int = 0
+    let mut d_last: int = 0
+    let mut y: int = first
+    while y <= last is
+        let line: string = ed.lines[y]
+        let mut delta: int = 0
+        if !dedent is
+            if line != "" || !had_sel is
+                textbuf::edit(ed, y, 0, y, 0, unit, "other", g)
+                delta = unit.len()
+            end
+        else is
+            let mut cut: int = 0
+            if util::starts_at(line, 0, "\t") is
+                cut = 1
+            else is
+                while cut < ed.tab_w && util::starts_at(line, cut, " ") is
+                    cut = cut + 1
+                end
+            end
+            if cut > 0 is
+                textbuf::edit(ed, y, 0, y, cut, "", "other", g)
+                delta = -cut
+            end
+        end
+        if y == first is d_first = delta end
+        if y == last is d_last = delta end
+        y = y + 1
+    end
+    if had_sel is
+        let e_adj: int = if ey == last is d_last else is 0 end
+        let s_adj: int = if sy == first is d_first else is 0 end
+        restore_sel(ed, sy, sx, s_adj, ey, ex, e_adj)
+    else is
+        ed.cy = sy
+        ed.cx = util::clampi(sx + d_first, 0, ed.lines[sy].len())
+        ed.has_sel = false
+        model::remember_col(ed)
+    end
+end
+
+;; Tab: wcięcie linii przy zaznaczeniu wielu linii, w przeciwnym razie wstawia tabulację.
+pub fn tab(ed: model::Ed) is
+    if model::has_real_sel(ed) is
+        let (sy, sx, ey, ex) = model::sel_bounds(ed)
+        if ey > sy is
+            indent_lines(ed, false)
+            return
+        end
+    end
+    if ed.soft_tabs is
+        let col: int = model::cursor_col(ed)
+        let n: int = ed.tab_w - (col % ed.tab_w)
+        insert_text(ed, util::rep(" ", n), "type")
+    else is
+        insert_text(ed, "\t", "type")
+    end
+end
+
+;; Powiela bieżącą linię pod spodem (kursor schodzi linię niżej, kolumna bez zmian).
+pub fn duplicate_line(ed: model::Ed) is
+    let x: int = ed.cx
+    let line: string = ed.lines[ed.cy]
+    textbuf::edit(ed, ed.cy, line.len(), ed.cy, line.len(), "\n" + line, "other", 0)
+    ed.cx = util::mini(x, ed.lines[ed.cy].len())
+    model::remember_col(ed)
+end
+
+;; Usuwa całą bieżącą linię.
+fn delete_line(ed: model::Ed) is
+    let y: int = ed.cy
+    let x: int = ed.cx
+    let n: int = ed.lines.len()
+    if n == 1 is
+        textbuf::edit(ed, 0, 0, 0, ed.lines[0].len(), "", "other", 0)
+    elsif y < n - 1 is
+        textbuf::edit(ed, y, 0, y + 1, 0, "", "other", 0)
+    else is
+        textbuf::edit(ed, y - 1, ed.lines[y - 1].len(), y, ed.lines[y].len(), "", "other", 0)
+    end
+    ed.cx = util::mini(x, ed.lines[ed.cy].len())
+    model::remember_col(ed)
+end
+
+;; Przełącza komentarz w zaznaczonych liniach (albo w bieżącej).
+pub fn toggle_comment(ed: model::Ed) is
+    let prefix: string = syntax::toggle_prefix(ed.lang)
+    let suffix: string = syntax::toggle_suffix(ed.lang)
+    let p0: string = util::trim_ws(prefix)
+    let s0: string = util::trim_ws(suffix)
+    let (sy, sx, ey, ex) = model::sel_bounds(ed)
+    let had_sel: bool = model::has_real_sel(ed)
+    let (first, last) = line_range(ed)
+
+    ;; czy wszystkie niepuste linie są już zakomentowane
+    let mut all_commented: bool = true
+    let mut has_text: bool = false
+    let mut y: int = first
+    while y <= last is
+        let t: string = util::trim_left(ed.lines[y])
+        if t != "" is
+            has_text = true
+            if !util::starts_at(t, 0, p0) is all_commented = false end
+        end
+        y = y + 1
+    end
+    if !has_text is all_commented = false end
+
+    let g: int = textbuf::new_group(ed)
+    let mut d_first: int = 0
+    let mut d_last: int = 0
+    y = first
+    while y <= last is
+        let line: string = ed.lines[y]
+        let ind: int = util::leading_ws(line).len()
+        let mut new_line: string = line
+        let mut delta: int = 0
+        if all_commented is
+            let mut body: string = line[ind + p0.len()..line.len()]
+            if util::starts_at(body, 0, " ") is body = body[1..body.len()] end
+            if s0 != "" && util::ends_with_text(util::trim_ws(body), s0) is
+                let t: string = util::trim_ws(body)
+                body = t[0..t.len() - s0.len()]
+                if util::ends_with_text(body, " ") is body = body[0..body.len() - 1] end
+            end
+            new_line = line[0..ind] + body
+            delta = new_line.len() - line.len()
+        elsif line != "" || last == first is
+            new_line = line[0..ind] + prefix + line[ind..line.len()] + suffix
+            delta = prefix.len()
+        end
+        if new_line != line is
+            textbuf::edit(ed, y, 0, y, line.len(), new_line, "other", g)
+        end
+        if y == first is d_first = delta end
+        if y == last is d_last = delta end
+        y = y + 1
+    end
+    if had_sel is
+        let s_adj: int = if sy == first is d_first else is 0 end
+        let e_adj: int = if ey == last is d_last else is 0 end
+        restore_sel(ed, sy, sx, s_adj, ey, ex, e_adj)
+    else is
+        ed.cy = sy
+        ed.cx = util::clampi(sx + d_first, 0, ed.lines[sy].len())
+        ed.has_sel = false
+        model::remember_col(ed)
+    end
+end
+
+;; ── Schowek ─────────────────────────────────────────────────────────────────
+
+;; Czy na schowku jest tekst „liniowy" (kończy się "\n", np. po cięciu linii).
+fn is_linewise(text: string) -> bool is
+    return util::ends_with_text(text, "\n")
+end
+
+pub fn copy_selection(ed: model::Ed) is
+    let text: string = model::selected_text(ed)
+    let sys: bool = clip::copy(ed, text)
+    if sys is
+        model::set_status(ed, "Copied", 2)
+    else is
+        model::set_status(ed, "Copied (internal clipboard - no clipboard tool found)", 3)
+    end
+end
+
+pub fn cut_selection(ed: model::Ed) is
+    let text: string = model::selected_text(ed)
+    let _c: bool = clip::copy(ed, text)
+    if model::has_real_sel(ed) is
+        delete_selection(ed)
+    else is
+        delete_line(ed)
+    end
+    model::set_status(ed, "Cut", 2)
+end
+
+pub fn paste_clipboard(ed: model::Ed) is
+    let raw: string = clip::paste(ed)
+    if raw == "" is
+        model::set_status(ed, "Clipboard is empty", 2)
+        return
+    end
+    let text: string = util::replace_all(raw, "\r\n", "\n")
+    if !model::has_real_sel(ed) && is_linewise(text) is
+        ;; pełne linie wstawiamy nad bieżącą linią, kursor zostaje na swojej linii
+        let x: int = ed.cx
+        textbuf::edit(ed, ed.cy, 0, ed.cy, 0, text, "other", 0)
+        ed.cx = util::mini(x, ed.lines[ed.cy].len())
+        model::remember_col(ed)
+    else is
+        insert_text(ed, text, "other")
+    end
+    model::set_status(ed, "Pasted", 2)
+end
