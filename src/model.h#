@@ -1,0 +1,199 @@
+use "bit -> tui" from "tui"
+
+;; ── model: stan edytora (odpowiednik `model` z model.go) ────────────────────
+;;
+;; `Ed` to jedna zmienna struktura (struktury H# są referencjami): `update`
+;; zmienia ją w miejscu, `view` tylko czyta. Pozycje kursora (`cy`, `cx`) to
+;; numer linii i przesunięcie w BAJTACH w tej linii – tak samo jak w Go.
+
+;; Jedna zapamiętana zmiana tekstu: w zakresie zaczynającym się w (sy, sx)
+;; tekst `before` został zastąpiony tekstem `after`.
+pub struct Action is
+    pub sy: int
+    pub sx: int
+    pub before: string
+    pub after: string
+    pub cy0: int          ;; kursor przed zmianą
+    pub cx0: int
+    pub cy1: int          ;; kursor po zmianie
+    pub cx1: int
+    pub grp: int          ;; >0: akcje o tym samym numerze cofa się razem
+    pub kind: string      ;; "type" | "back" | "del" | "other" (do łączenia w paczki)
+    pub stamp: int        ;; ms – moment zmiany (paczki wpisywania < 500 ms)
+end
+
+pub struct Ed is
+    pub lines: [string]
+    pub cy: int
+    pub cx: int
+    pub oy: int           ;; pierwsza widoczna linia
+    pub ox: int           ;; przesunięcie poziome (w kolumnach ekranu)
+    pub width: int
+    pub height: int       ;; liczba wierszy obszaru tekstu
+    pub filename: string
+    pub modified: bool
+    pub status: string
+    pub status_until: int
+    pub is_err: bool
+    pub mode: string      ;; edit | search | gotoline | find | replace | prompt | help
+    pub lang: string
+    pub pal: theme::Palette
+    pub input: any        ;; pole tekstowe tui używane w trybach search/gotoline/find/replace
+    pub lnw: int          ;; szerokość numerów linii (cyfry + 1, min. 4)
+    pub want_col: int     ;; pożądana kolumna ekranowa przy ruchu góra/dół
+    pub tab_w: int
+    pub soft_tabs: bool
+    pub has_sel: bool
+    pub ay: int           ;; kotwica zaznaczenia
+    pub ax: int
+    pub search: string
+    pub replace: string
+    pub undo: [Action]
+    pub redo: [Action]
+    pub next_grp: int
+    pub clip: string      ;; wewnętrzny schowek (gdy brak narzędzia systemowego)
+    pub crlf: bool        ;; plik miał końce linii \r\n – zapisujemy je z powrotem
+    pub pasting: bool     ;; trwa wklejanie z terminala (bracketed paste)
+    pub mouse: bool
+    pub backup: bool      ;; zapisuj kopię <plik>.bak przy każdym zapisie
+    pub done: bool        ;; użytkownik świadomie wychodzi (bez straty zmian)
+end
+
+pub fn now() -> int is
+    return __builtin_time_now_ms()
+end
+
+;; Wczytuje plik (brak pliku = pusty bufor) i buduje stan edytora.
+pub fn load_file(filename: string, theme_name: string, tab_w: int, soft_tabs: bool) -> Ed is
+    let mut content: string = ""
+    if __builtin_fs_exists(filename) is
+        content = __builtin_fs_read(filename)
+    end
+    let mut crlf: bool = false
+    if util::find_from(content, "\r\n", 0) >= 0 is
+        crlf = true
+        content = util::replace_all(content, "\r\n", "\n")
+    end
+    if util::ends_with_text(content, "\n") is
+        content = content[0..content.len() - 1]
+    end
+    let mut lines: [string] = util::split_lines(content)
+    if lines.len() == 0 is lines.push("") end
+    let empty_undo: [Action] = []
+    let empty_redo: [Action] = []
+    return Ed {
+        lines: lines, cy: 0, cx: 0, oy: 0, ox: 0, width: 80, height: 20,
+        filename: filename, modified: false, status: "", status_until: 0, is_err: false,
+        mode: "edit", lang: syntax::detect(filename), pal: theme::get(theme_name),
+        input: tui::textinput_new(""), lnw: util::maxi(4, util::digits(lines.len()) + 1),
+        want_col: 0, tab_w: tab_w, soft_tabs: soft_tabs, has_sel: false, ay: 0, ax: 0,
+        search: "", replace: "", undo: empty_undo, redo: empty_redo, next_grp: 1,
+        clip: "", crlf: crlf, pasting: false, mouse: false, backup: true, done: false
+    }
+end
+
+;; Zapis na dysk (z kopią .bak poprzedniej wersji, jak w wersji w Go).
+pub fn save(ed: Ed) -> bool is
+    if ed.backup && __builtin_fs_exists(ed.filename) is
+        let old: string = __builtin_fs_read(ed.filename)
+        let _b: bool = __builtin_fs_write(ed.filename + ".bak", old)
+    end
+    let mut body: string = iter_join(ed.lines, "\n") + "\n"
+    if ed.crlf is body = util::replace_all(body, "\n", "\r\n") end
+    return __builtin_fs_write(ed.filename, body)
+end
+
+;; Komunikat w linii statusu na `secs` sekund.
+pub fn set_status(ed: Ed, msg: string, secs: int) is
+    ed.status = msg
+    ed.is_err = false
+    ed.status_until = now() + secs * 1000
+end
+
+pub fn set_error(ed: Ed, msg: string) is
+    ed.status = msg
+    ed.is_err = true
+    ed.status_until = now() + 5000
+end
+
+pub fn update_lnw(ed: Ed) is
+    ed.lnw = util::maxi(4, util::digits(ed.lines.len()) + 1)
+end
+
+pub fn line_len(ed: Ed, y: int) -> int is
+    return ed.lines[y].len()
+end
+
+;; Kolumna ekranowa kursora.
+pub fn cursor_col(ed: Ed) -> int is
+    return util::visual_col(ed.lines[ed.cy], ed.cx, ed.tab_w)
+end
+
+;; Zapamiętuje obecną kolumnę jako pożądaną dla ruchu pionowego.
+pub fn remember_col(ed: Ed) is
+    ed.want_col = cursor_col(ed)
+end
+
+;; Zaznaczenie uporządkowane: (początek y, x, koniec y, x). Bez zaznaczenia = kursor.
+pub fn sel_bounds(ed: Ed) -> (int, int, int, int) is
+    if !ed.has_sel is return (ed.cy, ed.cx, ed.cy, ed.cx) end
+    if ed.ay < ed.cy || (ed.ay == ed.cy && ed.ax < ed.cx) is
+        return (ed.ay, ed.ax, ed.cy, ed.cx)
+    end
+    return (ed.cy, ed.cx, ed.ay, ed.ax)
+end
+
+;; Czy zaznaczenie istnieje i nie jest puste.
+pub fn has_real_sel(ed: Ed) -> bool is
+    if !ed.has_sel is return false end
+    return !(ed.ay == ed.cy && ed.ax == ed.cx)
+end
+
+;; Zakres zaznaczenia w linii `y`: (jest, od, do) w bajtach.
+pub fn sel_for_line(ed: Ed, y: int) -> (bool, int, int) is
+    if !ed.has_sel is return (false, 0, 0) end
+    let (sy, sx, ey, ex) = sel_bounds(ed)
+    if y < sy || y > ey is return (false, 0, 0) end
+    if sy == ey is return (true, sx, ex) end
+    if y == sy is return (true, sx, ed.lines[y].len()) end
+    if y == ey is return (true, 0, ex) end
+    return (true, 0, ed.lines[y].len())
+end
+
+;; Tekst między dwiema pozycjami (z "\n" między liniami).
+pub fn text_between(ed: Ed, sy: int, sx: int, ey: int, ex: int) -> string is
+    let first: string = ed.lines[sy]
+    if sy == ey is return first[sx..ex] end
+    let mut out: string = first[sx..first.len()]
+    let mut i: int = sy + 1
+    while i < ey is
+        out = out + "\n" + ed.lines[i]
+        i = i + 1
+    end
+    let last: string = ed.lines[ey]
+    return out + "\n" + last[0..ex]
+end
+
+;; Zaznaczony tekst; bez zaznaczenia – cała bieżąca linia z "\n" (jak w Go).
+pub fn selected_text(ed: Ed) -> string is
+    if !has_real_sel(ed) is return ed.lines[ed.cy] + "\n" end
+    let (sy, sx, ey, ex) = sel_bounds(ed)
+    return text_between(ed, sy, sx, ey, ex)
+end
+
+pub fn clear_sel(ed: Ed) is
+    ed.has_sel = false
+end
+
+;; Przewija widok tak, by kursor był widoczny (adjustScroll).
+pub fn scroll_to_cursor(ed: Ed) is
+    let h: int = util::maxi(1, ed.height)
+    if ed.cy < ed.oy is ed.oy = ed.cy end
+    if ed.cy >= ed.oy + h is ed.oy = ed.cy - h + 1 end
+    let text_w: int = util::maxi(1, ed.width - ed.lnw - 1)
+    let col: int = cursor_col(ed)
+    if col < ed.ox is ed.ox = col end
+    if col >= ed.ox + text_w is ed.ox = col - text_w + 1 end
+    if ed.ox < 0 is ed.ox = 0 end
+    if ed.oy < 0 is ed.oy = 0 end
+end
