@@ -1,0 +1,202 @@
+use "bit -> tui" from "tui"
+
+;; ── view: rysowanie ekranu (odpowiednik render.go) ──────────────────────────
+;;
+;; Układ ramki (łącznie `ed.height + 4` wierszy):
+;;   1 wiersz   pasek tytułu
+;;   height     numery linii + tekst (z kolorowaniem składni, zaznaczeniem, wyszukiwaniem)
+;;   1 wiersz   pasek statusu albo pole zapytania (szukaj / idź do linii / zamień)
+;;   2 wiersze  podpowiedzi klawiszy
+
+fn flag(b: bool) -> string is
+    if b is return "1" end
+    return "0"
+end
+
+;; Maluje fragment tekstu. `key` = klasa tokenu + flagi: zaznaczenie, trafienie, kursor.
+fn paint(ed: model::Ed, key: string, text: string) -> string is
+    let p: theme::Palette = ed.pal
+    let mut st: any = tui::style_fg(tui::style_new(), theme::color_for(p, key[0..1]))
+    if key[1..2] == "1" is
+        st = tui::style_bg(st, p.sel_bg)
+    elsif key[2..3] == "1" is
+        st = tui::style_bg(st, p.find_bg)
+    end
+    if key[3..4] == "1" is st = tui::style_reverse(st, true) end
+    return tui::style_render(st, text)
+end
+
+;; Jedna linia tekstu przycięta do okna [ox, ox + text_w).
+fn render_line(ed: model::Ed, y: int, text_w: int) -> string is
+    let line: string = ed.lines[y]
+    let n: int = line.len()
+    let cls: string = syntax::classify(line, ed.lang)
+    let (has_s, s0, s1) = model::sel_for_line(ed, y)
+    let marks: string = search::marks(ed, line)
+    let show_cursor: bool = y == ed.cy && ed.mode != "help"
+    let right: int = ed.ox + text_w
+    let mut out: string = ""
+    let mut run: string = ""
+    let mut run_key: string = ""
+    let mut col: int = 0
+    let mut j: int = 0
+    while j < n && col < right is
+        let nj: int = util::next_pos(line, j)
+        let cp: int = util::codepoint_at(line, j)
+        let w: int = util::cell_width(cp, col, ed.tab_w)
+        let mut piece: string = ""
+        let mut visible: bool = true
+        if cp == 9 is
+            let from: int = util::maxi(col, ed.ox)
+            let to: int = util::mini(col + w, right)
+            if to <= from is
+                visible = false
+            else is
+                piece = util::rep(" ", to - from)
+            end
+        elsif col < ed.ox || col + w > right is
+            visible = false
+        elsif cp < 32 || cp == 127 is
+            piece = "?"
+        else is
+            piece = line[j..nj]
+        end
+        if visible is
+            let c: string = if j < cls.len() is cls[j..j + 1] else is "n" end
+            let sel: bool = has_s && j >= s0 && j < s1
+            let mark: bool = marks != "" && marks[j..j + 1] == "1"
+            let cur: bool = show_cursor && j == ed.cx
+            let key: string = c + flag(sel) + flag(mark) + flag(cur)
+            if key != run_key is
+                if run != "" is out = out + paint(ed, run_key, run) end
+                run_key = key
+                run = ""
+            end
+            run = run + piece
+        end
+        col = col + w
+        j = nj
+    end
+    if run != "" is out = out + paint(ed, run_key, run) end
+    if show_cursor && ed.cx >= n && col >= ed.ox && col < right is
+        out = out + paint(ed, "n001", " ")
+    end
+    return out
+end
+
+;; Numer linii w marginesie.
+fn gutter(ed: model::Ed, y: int) -> string is
+    let p: theme::Palette = ed.pal
+    let num: string = to_string(y + 1)
+    let pad: string = util::rep(" ", util::maxi(0, ed.lnw - 1 - num.len()))
+    if y == ed.cy is
+        let st: any = tui::style_bold(tui::style_fg(tui::style_new(), p.fg_norm), true)
+        return tui::style_render(st, pad + num) + " "
+    end
+    return tui::colorize(pad + num, p.gutter) + " "
+end
+
+fn header(ed: model::Ed) -> string is
+    let p: theme::Palette = ed.pal
+    let mut left: string = "hedit - " + ed.filename
+    if ed.modified is left = left + " *" end
+    let right: string = ed.lang + " | " + p.name
+    let mut st: any = tui::style_fg(tui::style_new(), p.title_fg)
+    st = tui::style_bg(st, p.title_bg)
+    st = tui::style_padding(st, 1, 0)
+    return tui::style_render(st, tui::statusbar(left, right, util::maxi(1, ed.width - 2)))
+end
+
+;; Pasek statusu: komunikat po lewej, pozycja kursora po prawej.
+fn status_line(ed: model::Ed) -> string is
+    let p: theme::Palette = ed.pal
+    let mut pos: string = "Ln " + to_string(ed.cy + 1) + "/" + to_string(ed.lines.len()) + "  Col " + to_string(model::cursor_col(ed) + 1)
+    if ed.crlf is pos = pos + "  CRLF" end
+    let avail: int = util::maxi(0, ed.width - pos.len() - 1)
+    let left: string = tui::truncate_str(ed.status, avail, "…")
+    let gap: int = util::maxi(1, ed.width - tui::visible_len(left) - pos.len())
+    let lcolor: string = if ed.is_err is p.err_fg else is "#04B575" end
+    return tui::colorize(left, lcolor) + util::rep(" ", gap) + tui::colorize(pos, p.help_fg)
+end
+
+fn prompt_label(ed: model::Ed) -> string is
+    if ed.mode == "search" is return "Search: " end
+    if ed.mode == "gotoline" is return "Go to line: " end
+    if ed.mode == "find" is return "Replace - find: " end
+    if ed.mode == "replace" is return "Replace '" + ed.search + "' with: " end
+    return ""
+end
+
+fn bottom_line(ed: model::Ed) -> string is
+    let p: theme::Palette = ed.pal
+    let mut st: any = tui::style_fg(tui::style_new(), p.prompt_fg)
+    st = tui::style_bg(st, p.prompt_bg)
+    if ed.mode == "prompt" is
+        return tui::style_render(st, "Save changes before exit?  (Y)es   (N)o   Esc - cancel")
+    end
+    if ed.mode == "search" || ed.mode == "gotoline" || ed.mode == "find" || ed.mode == "replace" is
+        return tui::style_render(st, prompt_label(ed)) + tui::textinput_view(ed.input)
+    end
+    return status_line(ed)
+end
+
+fn help_lines(ed: model::Ed) -> [string] is
+    let mut h: [string] = []
+    h.push("  hedit - keys")
+    h.push("")
+    h.push("  Ctrl+O  save                      Ctrl+X  exit (asks when modified)")
+    h.push("  Ctrl+W  search / next match       Ctrl+R  replace all")
+    h.push("  Ctrl+G  go to line                Ctrl+Z / Ctrl+Y  undo / redo")
+    h.push("  Ctrl+K  cut (line or selection)   Ctrl+P / Alt+C  copy")
+    h.push("  Ctrl+U / Alt+V  paste             Ctrl+D  duplicate line")
+    h.push("  Ctrl+A  select all                Alt+/  toggle comment")
+    h.push("  Shift+arrows  select              Ctrl+left/right  word")
+    h.push("  Tab / Shift+Tab  indent / unindent selected lines")
+    h.push("  Home  first non-blank / line start      End  end of line")
+    h.push("  PgUp / PgDn  page                 Ctrl+Home / Ctrl+End  file start / end")
+    h.push("  Esc  clear selection and search highlight")
+    h.push("")
+    h.push("  Ctrl+C quits at once (a modified buffer is saved to <file>.hedit-recovery).")
+    h.push("")
+    h.push("  Press any key to go back.")
+    return h
+end
+
+pub fn view(model_any: any) -> string is
+    let ed: model::Ed = model_any
+    let p: theme::Palette = ed.pal
+    let h: int = util::maxi(1, ed.height)
+    let text_w: int = util::maxi(1, ed.width - ed.lnw - 1)
+    let mut out: [string] = []
+    out.push(header(ed))
+
+    if ed.mode == "help" is
+        let hl: [string] = help_lines(ed)
+        let mut i: int = 0
+        while i < h is
+            if i < hl.len() is
+                out.push(tui::truncate_str(hl[i], ed.width, "…"))
+            else is
+                out.push("")
+            end
+            i = i + 1
+        end
+    else is
+        let n: int = ed.lines.len()
+        let mut i: int = 0
+        while i < h is
+            let y: int = ed.oy + i
+            if y < n is
+                out.push(gutter(ed, y) + render_line(ed, y, text_w))
+            else is
+                out.push(tui::colorize(util::rep(" ", ed.lnw - 1) + "~", p.gutter))
+            end
+            i = i + 1
+        end
+    end
+
+    out.push(bottom_line(ed))
+    out.push(tui::colorize(tui::truncate_str("^O Save  ^X Exit  ^W Search  ^R Replace  ^G Go to line  ^Z Undo  ^Y Redo", ed.width, "…"), p.help_fg))
+    out.push(tui::colorize(tui::truncate_str("^K Cut  ^P Copy  ^U Paste  ^D Duplicate  ^A Select all  Alt+/ Comment  F1 Help", ed.width, "…"), p.help_fg))
+    return iter_join(out, "\n")
+end
